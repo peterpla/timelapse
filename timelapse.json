@@ -1,10 +1,12 @@
 [
     {
         "name": "Kohm Yah-man-yeh",
-        "url": "https://www.nps.gov/webcams-lavo/kyvc_webcam1.jpg?1589316288166",
-        "first": "Sunrise + 1 hour",
-        "last": "Sunset - 1 hour",
-        "captures_per_day": 5,
+        "webcamUrl": "https://www.nps.gov/webcams-lavo/kyvc_webcam1.jpg?1589316288166",
+        "firstTime": false,
+        "firstSunrise": true,
+        "lastTime": false,
+        "lastSunset": true,
+        "additional": 5,
         "folder_path": "/Volumes/ExtFiles/OneDrive/Pictures/Timelapse"
     }
 ]
