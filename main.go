@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"html/template"
 	"io/ioutil"
 	"log"
@@ -22,23 +24,27 @@ import (
 
 var srv *server
 
+const masterPath = "/Users/peterplamondon/Downloads/timelapse/"
+const masterFile = "timelapse.json"
+
 func main() {
 	defer catch() // implements recover so panics reported
 	sn := "timelapse"
 
 	srv = newServer()
+	if err := srv.mtld.Read(filepath.Join(masterPath, masterFile)); err != nil {
+		msg := fmt.Sprintf("main, srv.mtld.Read: %v", err)
+		panic(msg)
+	}
+
+	srv.initTemplates("./templates", ".html")
+
 	srv.router.ServeFiles("/static/*filepath", http.Dir("static"))
 	srv.router.GET("/new", srv.handleNew())
 	srv.router.GET("/", srv.handleHome())
 
-	// TODO: #4 read Timelapse Definitions (TLDef) master list
 	// TODO: #5 create Go routine to handle each TLDef
 	// TODO: #6 Go routine cleanup on SIGTERM, etc.
-
-	initTemplates(&srv.tmpl, "./templates", ".html")
-
-	// TODO: #7 handler for webform to enter new TLDef
-	// TODO: #8 handler on webform submit adds new TLDef to master list
 
 	hs := http.Server{
 		Addr:         ":" + srv.config.port,
@@ -58,8 +64,6 @@ func main() {
 
 }
 
-// ********** ********** ********** ********** ********** **********
-
 // startListening invokes ListenAndServe
 func startListening(hs *http.Server, sn string) {
 	if err := hs.ListenAndServe(); err != http.ErrServerClosed {
@@ -75,26 +79,6 @@ func catch() {
 			log.Fatalf("=====> RECOVER in %s.catch, recover() returned: %v\n", sn, r)
 		}
 	}()
-}
-
-func initTemplates(t **template.Template, dir string, ext string) {
-	sn := "initTemplates"
-
-	var allFiles []string
-	files, err := ioutil.ReadDir(dir)
-	if err != nil {
-		log.Fatalf("%s: ioutil.ReadDir(%q): %v\n", sn, dir, err)
-	}
-
-	// all files in specified directory with specified extension treated as templates
-	for _, file := range files {
-		filename := file.Name()
-		if strings.HasSuffix(filename, ext) {
-			allFiles = append(allFiles, filepath.Join(dir, filename))
-		}
-	}
-
-	*t = template.Must(template.ParseFiles(allFiles...)) // parses all .tmpl files in the 'templates' folder
 }
 
 // ********** ********** ********** ********** ********** **********
@@ -145,6 +129,7 @@ func (s *server) handleHome() httprouter.Handle {
 func (s *server) handleNew() httprouter.Handle {
 
 	return func(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+		sn := "handleNew"
 		// startTime := time.Now()
 
 		if err := r.ParseForm(); err != nil {
@@ -158,11 +143,11 @@ func (s *server) handleNew() httprouter.Handle {
 		// 	log.Printf("%q: %q\n", key, value)
 		// }
 
-		tld := &TLDef{}
+		tld := TLDef{}
 
 		decoder := formam.NewDecoder(nil)
-		if err := decoder.Decode(r.Form, tld); err != nil {
-			log.Printf("decoder.Decode: %v\n", err)
+		if err := decoder.Decode(r.Form, &tld); err != nil {
+			log.Printf("%s, decoder.Decode: %v\n", sn, err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 
@@ -180,15 +165,46 @@ func (s *server) handleNew() httprouter.Handle {
 			tld.LastSunset = true
 		}
 
+		// if the FolderPath directory doesn't exist, create it
+		if err := os.MkdirAll(tld.FolderPath, 0664); err != nil { // octal for -rw-rw-r--: owner read/write, group/other read-only
+			log.Printf("%s, os.MkdirAll: %v\n", sn, err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 		// log.Printf("handleNew, TLDef: %+v", tld)
 
-		srv.mtld.Add(tld)
+		srv.mtld.Append(&tld)
+		if err := srv.mtld.Write(); err != nil {
+			log.Printf("%s, srv.mtld.Write: %v\n", sn, err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 
 		// log.Printf("%s.%s, duration %v\n", sn, mn, time.Now().Sub(startTime))
 		return
 	}
+}
+
+// initTemplates reads and parses template files, and saves the template
+// in the server receiver
+func (s *server) initTemplates(dir string, ext string) {
+	sn := "initTemplates"
+
+	var allFiles []string
+	files, err := ioutil.ReadDir(dir)
+	if err != nil {
+		log.Fatalf("%s: ioutil.ReadDir(%q): %v\n", sn, dir, err)
+	}
+
+	// all files in specified directory with specified extension treated as templates
+	for _, file := range files {
+		filename := file.Name()
+		if strings.HasSuffix(filename, ext) {
+			allFiles = append(allFiles, filepath.Join(dir, filename))
+		}
+	}
+
+	s.tmpl = template.Must(template.ParseFiles(allFiles...)) // parses all .tmpl files in the 'templates' folder
 }
 
 // ********** ********** ********** ********** ********** **********
@@ -199,7 +215,7 @@ type Config struct {
 	port string
 }
 
-// Load populates Config with application configuration info
+// Load populates Config with flag and environment variable values
 func (c *Config) Load() {
 
 	pflag.StringVar(&c.path, "path", "./", "path to folder containing timelapse.json")
@@ -229,33 +245,85 @@ func (c *Config) Load() {
 
 // TLDef represents a Timelapse capture definition
 type TLDef struct {
-	Name         string `json:"name" formam:"name" validate:"required"`                 // Friendly name of this timelapse definition
-	URL          string `json:"webcamUrl" formam:"webcamUrl" validate:"required"`       // URL of webcam image
-	FirstTime    bool   `json:"firstTime" formam:"firstTime" validate:"required"`       // First capture at specific time
-	FirstSunrise bool   `json:"firstSunrise" formam:"firstSunrise" validate:"required"` // First capture at "Sunrise + offset"
-	LastTime     bool   `json:"lastTime" formam:"lastTime" validate:"required"`         // Last capture at specific time
-	LastSunset   bool   `json:"lastSunset" formam:"lastSunset" validate:"required"`     // Last capture at "Sunset - offset"
-	Additional   int    `json:"additional" formam:"additional" validate:"required"`     // Additional captures per day (in addition to First and Last)
-	FolderPath   string `json:"folder" formam:"folder" validate:"required"`             // Folder path to store captures
+	Name         string `json:"name" formam:"name"`                                              // Friendly name of this timelapse definition
+	URL          string `json:"webcamUrl" formam:"webcamUrl" validate:"url,required"`            // URL of webcam image
+	FirstTime    bool   `json:"firstTime" formam:"firstTime"`                                    // First capture at specific time
+	FirstSunrise bool   `json:"firstSunrise" formam:"firstSunrise"`                              // First capture at "Sunrise + offset"
+	LastTime     bool   `json:"lastTime" formam:"lastTime"`                                      // Last capture at specific time
+	LastSunset   bool   `json:"lastSunset" formam:"lastSunset"`                                  // Last capture at "Sunset - offset"
+	Additional   int    `json:"additional" formam:"additional" validate:"min=0,max=16,required"` // Additional captures per day (in addition to First and Last)
+	FolderPath   string `json:"folder" formam:"folder" validate:"dir,required"`                  // Folder path to store captures
 }
 
-type masterTLDefs []*TLDef
+type masterTLDefs []TLDef
 
-// NewMasterTLDefs returns a new (empty) master timelapse definition object
+// newMasterTLDefs returns a new (empty) master timelapse definition object
 func newMasterTLDefs() *masterTLDefs {
 	var mtld = new(masterTLDefs)
-	log.Printf("newMasterTLDefs, mtld: %p, %+v\n", mtld, *mtld)
+
+	log.Printf("newMasterTLDefs, %p, %+v", mtld, mtld)
 	return mtld
 }
 
-func (mtld *masterTLDefs) Add(newTLD *TLDef) error {
-	*mtld = append(*mtld, newTLD)
+// Read reads the master timelapse definitions file into the masterTLDefs
+// slice of its receiver
+func (mtld masterTLDefs) Read(path string) error {
+	sn := "mtld.Read"
 
-	// msg := fmt.Sprintf("mtld.Add after append, mtld: %p\n", mtld)
-	// for i, tld := range *mtld {
-	// 	msg = msg + fmt.Sprintf("[%d] %+v\n", i, tld)
-	// }
-	// log.Print(msg)
+	data, err := ioutil.ReadFile(path)
+	if err != nil {
+		log.Printf("%s, ioutil.ReadFile: %v\n", sn, err)
+		return err
+	}
+	if len(data) == 0 {
+		return fmt.Errorf("master file empty")
+	}
+	log.Printf("mtld.Read, contents of %s: %q\n", masterFile, data)
 
+	err = json.Unmarshal(data, srv.mtld)
+	if err != nil {
+		log.Printf("%s, json.Unmarshal: %v\n", sn, err)
+		return err
+	}
+
+	mtldSlice := *srv.mtld
+	for i, tld := range mtldSlice { // validate the TLDef structs within mtld
+		if err := srv.validate.Struct(tld); err != nil {
+			log.Printf("%s, validate.Struct, element %d: %v\n", sn, i, err)
+			return err
+		}
+	}
+
+	log.Printf("mtld.Read, %+v", mtld)
+	return nil
+}
+
+// Write writes the masterTLDefs to the master timelapse definitions file
+func (mtld masterTLDefs) Write() error {
+	sn := "mtld.Write"
+
+	var buf []byte
+	var err error
+
+	if buf, err = json.Marshal(mtld); err != nil {
+		log.Printf("%s, json.Marshal: %v\n", sn, err)
+		return err
+	}
+
+	filename := filepath.Join(masterPath, masterFile)
+	if err = ioutil.WriteFile(filename, buf, 0644); err != nil { // -rw-r--r--
+		log.Printf("%s, ioutil.WriteFile: %v\n", sn, err)
+		return err
+	}
+
+	log.Printf("mtld.Write, %s", filename)
+	return nil
+}
+
+// Append appends a timelapse definition to the masterTLDefs slice
+func (mtld *masterTLDefs) Append(newTLD *TLDef) error {
+	*mtld = append(*mtld, *newTLD)
+
+	// log.Printf("mtld.Add, %+v", mtld)
 	return nil
 }
