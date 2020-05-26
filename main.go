@@ -34,7 +34,7 @@ func main() {
 	defer catch() // implements recover so panics reported
 	sn := "timelapse"
 
-	runtime.GOMAXPROCS(4)
+	runtime.GOMAXPROCS(2)
 
 	// use context and cancel with goroutines to handle Ctrl+C
 	ctx, cancel := context.WithCancel(context.Background())
@@ -49,28 +49,29 @@ func main() {
 	var wg sync.WaitGroup
 
 	for i, tld := range *srv.mtld {
-		log.Printf("%s, launching goroutine #%d, %s", sn, i, tld.Name)
+		log.Printf("%s, launching goroutine #%d, %s, poll interval: %d", sn, i, tld.Name, srv.config.pollSecs)
 		wg.Add(1)
-		go func(ctx context.Context, tld TLDef) {
-			log.Printf("handling TLD %s (%p)\n", tld.Name, &tld)
+		go func(ctx context.Context, tld TLDef, pollInterval int) {
+			log.Printf("goroutine handling TLDef %s (%p)\n", tld.Name, &tld)
 
-			// setup for faster output on exit
-			w := log.Writer()
-			exitMsg := fmt.Sprintf("TLDef %s exiting after ctx.Done\n", tld.Name)
+			tld.SetCaptureTimes() // calculate all capture times
 
 			for {
 				select {
 				case <-ctx.Done():
-					w.Write([]byte(exitMsg))
+					log.Printf("goroutine handling TLDef %s exiting after ctx.Done\n", tld.Name)
 					wg.Done()
 					return
 				default:
-					log.Printf("TLDef %s not dead yet\n", tld.Name)
-					time.Sleep(4 * time.Second)
+					if tld.IsTimeForCapture() {
+						// capture and store the image
+					}
 				}
+				// log.Printf("TLDef %s sleeping for %d seconds...\n", tld.Name, pollInterval)
+				time.Sleep(time.Duration(pollInterval) * time.Second)
 			}
-		}(ctx, tld)
-		time.Sleep(1 * time.Second)
+		}(ctx, tld, srv.config.pollSecs)
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	srv.initTemplates("./templates", ".html")
@@ -247,14 +248,16 @@ func (s *server) initTemplates(dir string, ext string) {
 
 // Config holds application-wide configuration info
 type Config struct {
-	path string
-	port string
+	path     string
+	pollSecs int
+	port     string
 }
 
 // Load populates Config with flag and environment variable values
 func (c *Config) Load() {
 
 	pflag.StringVar(&c.path, "path", "./", "path to folder containing timelapse.json")
+	pflag.IntVar(&c.pollSecs, "poll", 60, "seconds between time checks")
 	pflag.StringVar(&c.port, "port", "8099", "HTTP port to listen on")
 	var help bool
 	pflag.BoolVarP(&help, "help", "h", false, "show usage information")
@@ -266,15 +269,20 @@ func (c *Config) Load() {
 	}
 
 	viper.BindPFlag("path", pflag.Lookup("path"))
+	viper.BindPFlag("poll", pflag.Lookup("poll"))
 	viper.BindPFlag("port", pflag.Lookup("port"))
 
 	viper.SetEnvPrefix("timelapse")
 	viper.AutomaticEnv()
 	viper.BindEnv("path") // treats as upper-cased SerEnvPrefix value + "_" + upper-cased "path" (BindEnv argument)
+	viper.BindEnv("poll")
 	viper.BindEnv("port")
 
 	c.path = viper.GetString("path")
+	c.pollSecs = viper.GetInt("poll")
 	c.port = viper.GetString("port")
+
+	log.Printf("Config: %+v\n", c)
 }
 
 // ********** ********** ********** ********** ********** **********
@@ -289,6 +297,18 @@ type TLDef struct {
 	LastSunset   bool   `json:"lastSunset" formam:"lastSunset"`                                  // Last capture at "Sunset - offset"
 	Additional   int    `json:"additional" formam:"additional" validate:"min=0,max=16,required"` // Additional captures per day (in addition to First and Last)
 	FolderPath   string `json:"folder" formam:"folder" validate:"dir,required"`                  // Folder path to store captures
+}
+
+// SetCaptureTimes calculate all capture times
+func (tld *TLDef) SetCaptureTimes() error {
+	return nil
+}
+
+// IsTimeForCapture determines if it's time to capture an image
+func (tld TLDef) IsTimeForCapture() bool {
+	// if within some delta of capture time, return true
+	// else
+	return false
 }
 
 type masterTLDefs []TLDef
