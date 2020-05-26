@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -10,7 +11,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -31,20 +34,49 @@ func main() {
 	defer catch() // implements recover so panics reported
 	sn := "timelapse"
 
+	runtime.GOMAXPROCS(4)
+
+	// use context and cancel with goroutines to handle Ctrl+C
+	ctx, cancel := context.WithCancel(context.Background())
+
 	srv = newServer()
 	if err := srv.mtld.Read(filepath.Join(masterPath, masterFile)); err != nil {
 		msg := fmt.Sprintf("main, srv.mtld.Read: %v", err)
 		panic(msg)
 	}
 
-	srv.initTemplates("./templates", ".html")
+	// TODO: #5 create Go routine to handle each TLDef
+	var wg sync.WaitGroup
 
+	for i, tld := range *srv.mtld {
+		log.Printf("%s, launching goroutine #%d, %s", sn, i, tld.Name)
+		wg.Add(1)
+		go func(ctx context.Context, tld TLDef) {
+			log.Printf("handling TLD %s (%p)\n", tld.Name, &tld)
+
+			// setup for faster output on exit
+			w := log.Writer()
+			exitMsg := fmt.Sprintf("TLDef %s exiting after ctx.Done\n", tld.Name)
+
+			for {
+				select {
+				case <-ctx.Done():
+					w.Write([]byte(exitMsg))
+					wg.Done()
+					return
+				default:
+					log.Printf("TLDef %s not dead yet\n", tld.Name)
+					time.Sleep(4 * time.Second)
+				}
+			}
+		}(ctx, tld)
+		time.Sleep(1 * time.Second)
+	}
+
+	srv.initTemplates("./templates", ".html")
 	srv.router.ServeFiles("/static/*filepath", http.Dir("static"))
 	srv.router.GET("/new", srv.handleNew())
 	srv.router.GET("/", srv.handleHome())
-
-	// TODO: #5 create Go routine to handle each TLDef
-	// TODO: #6 Go routine cleanup on SIGTERM, etc.
 
 	hs := http.Server{
 		Addr:         ":" + srv.config.port,
@@ -52,16 +84,20 @@ func main() {
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
-
-	log.Printf("Starting service %s listening on port %s", sn, srv.config.port)
-
+	log.Printf("Starting service %s listening on port %s", sn, hs.Addr)
 	go startListening(&hs, "main") // call ListenAndServe from a separate go routine so main can listen for signals
 
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
-	s := <-signals
-	log.Printf("\n%s received signal %s, terminating", sn, s.String())
+	// on handled signals, cancel goroutines and exit
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
+	defer func() {
+		signal.Stop(c)
+		cancel()
+		wg.Wait()
+	}()
 
+	s := <-c
+	log.Printf("\n%s received signal %s, terminating", sn, s.String())
 }
 
 // startListening invokes ListenAndServe
