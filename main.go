@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -10,7 +11,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -31,20 +34,49 @@ func main() {
 	defer catch() // implements recover so panics reported
 	sn := "timelapse"
 
+	runtime.GOMAXPROCS(2)
+
+	// use context and cancel with goroutines to handle Ctrl+C
+	ctx, cancel := context.WithCancel(context.Background())
+
 	srv = newServer()
 	if err := srv.mtld.Read(filepath.Join(masterPath, masterFile)); err != nil {
 		msg := fmt.Sprintf("main, srv.mtld.Read: %v", err)
 		panic(msg)
 	}
 
-	srv.initTemplates("./templates", ".html")
+	// TODO: #5 create Go routine to handle each TLDef
+	var wg sync.WaitGroup
+	for i, tld := range *srv.mtld {
+		log.Printf("%s, launching goroutine #%d, %s, poll interval: %d", sn, i, tld.Name, srv.config.pollSecs)
+		wg.Add(1)
+		go func(ctx context.Context, tld TLDef, pollInterval int) {
+			log.Printf("goroutine handling TLDef %s (%p)\n", tld.Name, &tld)
 
+			tld.SetCaptureTimes() // calculate all capture times
+
+			for {
+				select {
+				case <-ctx.Done():
+					log.Printf("goroutine handling TLDef %s exiting after ctx.Done\n", tld.Name)
+					wg.Done()
+					return
+				default:
+					if tld.IsTimeForCapture() {
+						// capture and store the image
+					}
+				}
+				// log.Printf("TLDef %s sleeping for %d seconds...\n", tld.Name, pollInterval)
+				time.Sleep(time.Duration(pollInterval) * time.Second)
+			}
+		}(ctx, tld, srv.config.pollSecs)
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	srv.initTemplates("./templates", ".html")
 	srv.router.ServeFiles("/static/*filepath", http.Dir("static"))
 	srv.router.GET("/new", srv.handleNew())
 	srv.router.GET("/", srv.handleHome())
-
-	// TODO: #5 create Go routine to handle each TLDef
-	// TODO: #6 Go routine cleanup on SIGTERM, etc.
 
 	hs := http.Server{
 		Addr:         ":" + srv.config.port,
@@ -52,16 +84,20 @@ func main() {
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
-
-	log.Printf("Starting service %s listening on port %s", sn, srv.config.port)
-
+	log.Printf("Starting service %s listening on port %s", sn, hs.Addr)
 	go startListening(&hs, "main") // call ListenAndServe from a separate go routine so main can listen for signals
 
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
-	s := <-signals
-	log.Printf("\n%s received signal %s, terminating", sn, s.String())
+	// on handled signals, cancel goroutines and exit
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
+	defer func() {
+		signal.Stop(c)
+		cancel()
+		wg.Wait()
+	}()
 
+	s := <-c
+	log.Printf("\n%s received signal %s, terminating", sn, s.String())
 }
 
 // startListening invokes ListenAndServe
@@ -211,14 +247,16 @@ func (s *server) initTemplates(dir string, ext string) {
 
 // Config holds application-wide configuration info
 type Config struct {
-	path string
-	port string
+	path     string
+	pollSecs int
+	port     string
 }
 
 // Load populates Config with flag and environment variable values
 func (c *Config) Load() {
 
 	pflag.StringVar(&c.path, "path", "./", "path to folder containing timelapse.json")
+	pflag.IntVar(&c.pollSecs, "poll", 60, "seconds between time checks")
 	pflag.StringVar(&c.port, "port", "8099", "HTTP port to listen on")
 	var help bool
 	pflag.BoolVarP(&help, "help", "h", false, "show usage information")
@@ -230,29 +268,49 @@ func (c *Config) Load() {
 	}
 
 	viper.BindPFlag("path", pflag.Lookup("path"))
+	viper.BindPFlag("poll", pflag.Lookup("poll"))
 	viper.BindPFlag("port", pflag.Lookup("port"))
 
 	viper.SetEnvPrefix("timelapse")
 	viper.AutomaticEnv()
 	viper.BindEnv("path") // treats as upper-cased SerEnvPrefix value + "_" + upper-cased "path" (BindEnv argument)
+	viper.BindEnv("poll")
 	viper.BindEnv("port")
 
 	c.path = viper.GetString("path")
+	c.pollSecs = viper.GetInt("poll")
 	c.port = viper.GetString("port")
+
+	log.Printf("Config: %+v\n", c)
 }
 
 // ********** ********** ********** ********** ********** **********
 
 // TLDef represents a Timelapse capture definition
 type TLDef struct {
-	Name         string `json:"name" formam:"name"`                                              // Friendly name of this timelapse definition
-	URL          string `json:"webcamUrl" formam:"webcamUrl" validate:"url,required"`            // URL of webcam image
-	FirstTime    bool   `json:"firstTime" formam:"firstTime"`                                    // First capture at specific time
-	FirstSunrise bool   `json:"firstSunrise" formam:"firstSunrise"`                              // First capture at "Sunrise + offset"
-	LastTime     bool   `json:"lastTime" formam:"lastTime"`                                      // Last capture at specific time
-	LastSunset   bool   `json:"lastSunset" formam:"lastSunset"`                                  // Last capture at "Sunset - offset"
-	Additional   int    `json:"additional" formam:"additional" validate:"min=0,max=16,required"` // Additional captures per day (in addition to First and Last)
-	FolderPath   string `json:"folder" formam:"folder" validate:"dir,required"`                  // Folder path to store captures
+	Name         string      `json:"name" formam:"name"`                                              // Friendly name of this timelapse definition
+	URL          string      `json:"webcamUrl" formam:"webcamUrl" validate:"url,required"`            // URL of webcam image
+	FirstTime    bool        `json:"firstTime" formam:"firstTime"`                                    // First capture at specific time
+	FirstSunrise bool        `json:"firstSunrise" formam:"firstSunrise"`                              // First capture at "Sunrise + offset"
+	LastTime     bool        `json:"lastTime" formam:"lastTime"`                                      // Last capture at specific time
+	LastSunset   bool        `json:"lastSunset" formam:"lastSunset"`                                  // Last capture at "Sunset - offset"
+	Additional   int         `json:"additional" formam:"additional" validate:"min=0,max=16,required"` // Additional captures per day (in addition to First and Last)
+	FolderPath   string      `json:"folder" formam:"folder" validate:"dir,required"`                  // Folder path to store captures
+	Latitude     float64     `json:"latitude" formam:"latitude" validate:"latitude,required"`         // Latitude of webcam
+	Longitude    float64     `json:"longitude" formam:"longitude" validate:"longitude,required"`      // Longitude of webcam
+	CaptureTimes []time.Time `json:"captureTimes"`                                                    // Times (in time zone where the code is running) to capture images
+}
+
+// SetCaptureTimes calculate all capture times
+func (tld *TLDef) SetCaptureTimes() error {
+	return nil
+}
+
+// IsTimeForCapture determines if it's time to capture an image
+func (tld TLDef) IsTimeForCapture() bool {
+	// if within some delta of capture time, return true
+	// else
+	return false
 }
 
 type masterTLDefs []TLDef
