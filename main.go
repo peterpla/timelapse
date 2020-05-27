@@ -47,7 +47,6 @@ func main() {
 
 	// TODO: #5 create Go routine to handle each TLDef
 	var wg sync.WaitGroup
-
 	for i, tld := range *srv.mtld {
 		log.Printf("%s, launching goroutine #%d, %s, poll interval: %d", sn, i, tld.Name, srv.config.pollSecs)
 		wg.Add(1)
@@ -289,14 +288,17 @@ func (c *Config) Load() {
 
 // TLDef represents a Timelapse capture definition
 type TLDef struct {
-	Name         string `json:"name" formam:"name"`                                              // Friendly name of this timelapse definition
-	URL          string `json:"webcamUrl" formam:"webcamUrl" validate:"url,required"`            // URL of webcam image
-	FirstTime    bool   `json:"firstTime" formam:"firstTime"`                                    // First capture at specific time
-	FirstSunrise bool   `json:"firstSunrise" formam:"firstSunrise"`                              // First capture at "Sunrise + offset"
-	LastTime     bool   `json:"lastTime" formam:"lastTime"`                                      // Last capture at specific time
-	LastSunset   bool   `json:"lastSunset" formam:"lastSunset"`                                  // Last capture at "Sunset - offset"
-	Additional   int    `json:"additional" formam:"additional" validate:"min=0,max=16,required"` // Additional captures per day (in addition to First and Last)
-	FolderPath   string `json:"folder" formam:"folder" validate:"dir,required"`                  // Folder path to store captures
+	Name         string      `json:"name" formam:"name"`                                              // Friendly name of this timelapse definition
+	URL          string      `json:"webcamUrl" formam:"webcamUrl" validate:"url,required"`            // URL of webcam image
+	FirstTime    bool        `json:"firstTime" formam:"firstTime"`                                    // First capture at specific time
+	FirstSunrise bool        `json:"firstSunrise" formam:"firstSunrise"`                              // First capture at "Sunrise + offset"
+	LastTime     bool        `json:"lastTime" formam:"lastTime"`                                      // Last capture at specific time
+	LastSunset   bool        `json:"lastSunset" formam:"lastSunset"`                                  // Last capture at "Sunset - offset"
+	Additional   int         `json:"additional" formam:"additional" validate:"min=0,max=16,required"` // Additional captures per day (in addition to First and Last)
+	FolderPath   string      `json:"folder" formam:"folder" validate:"dir,required"`                  // Folder path to store captures
+	Latitude     float64     `json:"latitude" formam:"latitude" validate:"latitude,required"`         // Latitude of webcam
+	Longitude    float64     `json:"longitude" formam:"longitude" validate:"longitude,required"`      // Longitude of webcam
+	CaptureTimes []time.Time `json:"captureTimes"`                                                    // Times (in time zone where the code is running) to capture images
 }
 
 // SetCaptureTimes calculate all capture times
