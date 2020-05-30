@@ -32,12 +32,14 @@ var srv *server
 const (
 	masterPath = "/Users/peterplamondon/Downloads/timelapse/"
 	masterFile = "timelapse.json"
-	timeLayout = "3:04:05 PM" // see https://godoc.org/time#Time.Format and https://ednsquare.com/story/date-and-time-manipulation-golang-with-examples------cU1FjK
+	timeLayout = "2006-01-02T15:04:05Z" // ISO 8601; see https://sunrise-sunset.org/api, https://godoc.org/time#Time.Format and https://ednsquare.com/story/date-and-time-manipulation-golang-with-examples------cU1FjK
 )
 
 func main() {
 	defer catch() // implements recover so panics reported
-	sn := "timelapse"
+	sn := "main"
+
+	var err error
 
 	runtime.GOMAXPROCS(2)
 
@@ -45,20 +47,28 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	srv = newServer()
-	if err := srv.mtld.Read(filepath.Join(masterPath, masterFile)); err != nil {
-		msg := fmt.Sprintf("main, srv.mtld.Read: %v", err)
+
+	srv.localLoc, err = time.LoadLocation("Local")
+	if err != nil {
+		msg := fmt.Sprintf("%s, time.LoadLocation(\"Local\"): %v", sn, err)
+		panic(msg)
+	}
+
+	if err = srv.mtld.Read(filepath.Join(masterPath, masterFile)); err != nil {
+		msg := fmt.Sprintf("%s, srv.mtld.Read: %v", sn, err)
 		panic(msg)
 	}
 
 	var wg sync.WaitGroup
-	for i, tld := range *srv.mtld {
-		log.Printf("%s, launching goroutine #%d, %s, poll interval: %d", sn, i, tld.Name, srv.config.pollSecs)
+	for _, tld := range *srv.mtld {
+
+		// log.Printf("%s, launching goroutine #%d (%s)", sn, i, tld.Name)
 		wg.Add(1)
 		go func(ctx context.Context, tld TLDef, pollInterval int) {
-			log.Printf("goroutine handling TLDef %s (%p)\n", tld.Name, &tld)
+			log.Printf("goroutine handling %s (%p)\n", tld.Name, &tld)
 
 			tld.SetCaptureTimes(time.Now()) // calculate all capture times for today
-			tld.UpdateIndexOfNext()         // determine which capture time comes next
+			tld.UpdateNextCapture()
 
 			for {
 				select {
@@ -69,15 +79,15 @@ func main() {
 				default:
 					if tld.IsTimeForCapture() {
 						// capture and store the image
-						log.Printf("time for TLD %s capture\n", tld.Name)
-						tld.UpdateIndexOfNext()
+						log.Printf("********** %s image captured (not really)\n", tld.Name)
+						tld.UpdateNextCapture()
 					}
 				}
 				// log.Printf("TLDef %s sleeping for %d seconds...\n", tld.Name, pollInterval)
 				time.Sleep(time.Duration(pollInterval) * time.Second)
 			}
 		}(ctx, tld, srv.config.pollSecs)
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(1 * time.Second) // respect TimeZoneDB.com limit 1 request/second
 	}
 
 	srv.initTemplates("./templates", ".html")
@@ -87,17 +97,16 @@ func main() {
 
 	hs := http.Server{
 		Addr:         ":" + srv.config.port,
-		Handler:      middleware.LogReqResp(srv.router), // mux
+		Handler:      middleware.LogReqResp(srv.router),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
 	log.Printf("Starting service %s listening on port %s", sn, hs.Addr)
 	go startListening(&hs, "main") // call ListenAndServe from a separate go routine so main can listen for signals
 
-	// on handled signals, cancel goroutines and exit
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
-	defer func() {
+	defer func() { // on handled signals, cancel goroutines, wait and exit
 		signal.Stop(c)
 		cancel()
 		wg.Wait()
@@ -116,7 +125,7 @@ func startListening(hs *http.Server, sn string) {
 
 // catch uses recover() and logs it
 func catch() {
-	sn := "timelapse"
+	sn := "main"
 	defer func() {
 		if r := recover(); r != nil {
 			log.Fatalf("=====> RECOVER in %s.catch, recover() returned: %v\n", sn, r)
@@ -131,11 +140,12 @@ type server struct {
 	validate *validator.Validate // use a single instance of Validate, it caches struct info
 	config   *Config
 	tmpl     *template.Template
-	mtld     *masterTLDefs
+	localLoc *time.Location // timezone where this code is running
+	mtld     *masterTLDefs  // timelapse definitions, read from/written to timelapse.json
 }
 
-// newServer returns a server struct with router and validation initialized,
-// and application configuration loaded
+// newServer creates a new instance of server with router and validation
+// initialized and application configuration loaded
 func newServer() *server {
 	s := &server{}
 	s.router = httprouter.New()
@@ -262,9 +272,10 @@ func (s *server) initTemplates(dir string, ext string) {
 
 // Config holds application-wide configuration info
 type Config struct {
-	path     string
-	pollSecs int
-	port     string
+	path     string // path to timelapse.json
+	pollSecs int    // polling interval = delay to handle Ctrl-C
+	port     string // TCP port to listen on
+	tzdbAPI  string // API key for TimeZoneDB.com
 }
 
 // Load populates Config with flag and environment variable values
@@ -273,6 +284,7 @@ func (c *Config) Load() {
 	pflag.StringVar(&c.path, "path", "./", "path to folder containing timelapse.json")
 	pflag.IntVar(&c.pollSecs, "poll", 60, "seconds between time checks")
 	pflag.StringVar(&c.port, "port", "8099", "HTTP port to listen on")
+	pflag.StringVar(&c.tzdbAPI, "tzdb", "", "API key for TimeZoneDB.com")
 	var help bool
 	pflag.BoolVarP(&help, "help", "h", false, "show usage information")
 	pflag.Parse()
@@ -285,16 +297,19 @@ func (c *Config) Load() {
 	viper.BindPFlag("path", pflag.Lookup("path"))
 	viper.BindPFlag("poll", pflag.Lookup("poll"))
 	viper.BindPFlag("port", pflag.Lookup("port"))
+	viper.BindPFlag("tzdb", pflag.Lookup("tzdb"))
 
 	viper.SetEnvPrefix("timelapse")
 	viper.AutomaticEnv()
 	viper.BindEnv("path") // treats as upper-cased SetEnvPrefix value + "_" + upper-cased "path"
 	viper.BindEnv("poll")
 	viper.BindEnv("port")
+	viper.BindEnv("tzdb")
 
 	c.path = viper.GetString("path")
 	c.pollSecs = viper.GetInt("poll")
 	c.port = viper.GetString("port")
+	c.tzdbAPI = viper.GetString("tzdb_API")
 
 	log.Printf("Config: %+v\n", c)
 }
@@ -303,89 +318,117 @@ func (c *Config) Load() {
 
 // TLDef represents a Timelapse capture definition
 type TLDef struct {
-	Name         string      `json:"name" formam:"name"`                                              // Friendly name of this timelapse definition
-	URL          string      `json:"webcamUrl" formam:"webcamUrl" validate:"url,required"`            // URL of webcam image
-	Latitude     float64     `json:"latitude" formam:"latitude" validate:"latitude,required"`         // Latitude of webcam
-	Longitude    float64     `json:"longitude" formam:"longitude" validate:"longitude,required"`      // Longitude of webcam
-	FirstTime    bool        `json:"firstTime" formam:"firstTime"`                                    // First capture at specific time
-	FirstSunrise bool        `json:"firstSunrise" formam:"firstSunrise"`                              // First capture at "Sunrise + offset"
-	LastTime     bool        `json:"lastTime" formam:"lastTime"`                                      // Last capture at specific time
-	LastSunset   bool        `json:"lastSunset" formam:"lastSunset"`                                  // Last capture at "Sunset - offset"
-	Additional   int         `json:"additional" formam:"additional" validate:"min=0,max=16,required"` // Additional captures per day (in addition to First and Last)
-	FolderPath   string      `json:"folder" formam:"folder" validate:"dir,required"`                  // Folder path to store captures
-	TZWebcam     string      `json:"-"`                                                               // timezone of the webcam (e.g., "America/Los_Angeles")
-	SunriseUTC   time.Time   `json:"-"`                                                               // sunrise at webcam lat/long (UTC)
-	SolarNoonUTC time.Time   `json:"-"`                                                               // solar noon at webcam lat/long (UTC)
-	SunsetUTC    time.Time   `json:"-"`                                                               // sunset at webcam lat/long (UTC)
-	CaptureTimes []time.Time `json:"-"`                                                               // Times (in time zone where the code is running) to capture images
-	IndexOfNext  int         `json:"-"`                                                               // index in CaptureTimes[] of next (future) capture time
+	Name         string         `json:"name" formam:"name"`                                              // Friendly name of this timelapse definition
+	URL          string         `json:"webcamUrl" formam:"webcamUrl" validate:"url,required"`            // URL of webcam image
+	Latitude     float64        `json:"latitude" formam:"latitude" validate:"latitude,required"`         // Latitude of webcam
+	Longitude    float64        `json:"longitude" formam:"longitude" validate:"longitude,required"`      // Longitude of webcam
+	FirstTime    bool           `json:"firstTime" formam:"firstTime"`                                    // First capture at specific time
+	FirstSunrise bool           `json:"firstSunrise" formam:"firstSunrise"`                              // First capture at "Sunrise + offset"
+	LastTime     bool           `json:"lastTime" formam:"lastTime"`                                      // Last capture at specific time
+	LastSunset   bool           `json:"lastSunset" formam:"lastSunset"`                                  // Last capture at "Sunset - offset"
+	Additional   int            `json:"additional" formam:"additional" validate:"min=0,max=16,required"` // Additional captures per day (in addition to First and Last)
+	FolderPath   string         `json:"folder" formam:"folder" validate:"dir,required"`                  // Folder path to store captures
+	WebcamTZ     string         `json:"-"`                                                               // timezone of the webcam (e.g., "America/Los_Angeles")
+	WebcamLoc    *time.Location `json:"-"`                                                               // time.Locaion of the webcam
+	SunriseUTC   time.Time      `json:"-"`                                                               // sunrise at webcam lat/long (UTC)
+	SolarNoonUTC time.Time      `json:"-"`                                                               // solar noon at webcam lat/long (UTC)
+	SunsetUTC    time.Time      `json:"-"`                                                               // sunset at webcam lat/long (UTC)
+	CaptureTimes []time.Time    `json:"-"`                                                               // Times (in time zone where the code is running) to capture images
+	NextCapture  int            `json:"-"`                                                               // index in CaptureTimes[] of next (future) capture time
 }
 
 // newTLDef initializes a TLDef structure
 func newTLDef() *TLDef {
 	tld := TLDef{}
-	tld.CaptureTimes = []time.Time{} // prefer an empty slice so json.Marshal() will marshall to produces "[]"
+	tld.CaptureTimes = []time.Time{} // prefer an empty slice so json.Marshal() will emit "[]"
 
 	return &tld
 }
 
 // SetCaptureTimes calculate all capture times for the specified date
+// and initializes NextCapture
 func (tld *TLDef) SetCaptureTimes(date time.Time) error {
 	sn := "main.TLDef.SetCaptureTimes"
 	var err error
 
-	log.Printf("%s, %s, date: %v\n", sn, tld.Name, date)
+	// log.Printf("%s, %s date: %v, CaptureTimes (len %d): %v\n", sn, tld.Name, date, len(tld.CaptureTimes), tld.CaptureTimes)
 
-	if err = tld.SetSolar(date); err != nil { // set sunrise, solar noon, and sunset for specified date
-		log.Printf("%s, %s, tld.SetSolar: %v\n", sn, tld.Name, err)
+	if err = tld.SetWebcamTZ(); err != nil { // establish timezone of webcam
+		log.Printf("%s, %s SetWebcamTZ: %v\n", sn, tld.Name, err)
 		return err
 	}
 
-	tld.CaptureTimes = append(tld.CaptureTimes, TimeToSecond(date)) // HACK
+	if err = tld.GetSolarTimes(date); err != nil { // set sunrise, solar noon, and sunset for specified date
+		log.Printf("%s, %s tld.GetSolarTimes: %v\n", sn, tld.Name, err)
+		return err
+	}
 
-	// TODO: get timezone of lat/long
-	// TODO: if selected, get sunrise and sunset times at lat/long [for specified date]
-	// TODO: calculate and append to CaptureTimes the local time [for specified date] corresponding to first capture time at webcam
-	// TODO: if additional > 0, calculate the span between additional captures (i.e., split up span from first to last in "additional" segments)
-	// TODO: for ... calculate and append local capture time [for specified date] for next span
-	// TODO: calculate and append to CaptureTimes the local time [for specified date] corresponding to last capture time at webcam
+	if tld.FirstSunrise && !tld.FirstTime { // add local time of sunrise (where this code is running)
+		tld.CaptureTimes = append(tld.CaptureTimes, tld.SunriseUTC.In(srv.localLoc))
+	}
 
-	// TODO: sort slice's capture times into increasing order; superfluous if logic above is correct
+	if tld.FirstTime && !tld.FirstSunrise { // add local time corresponding to specified first capture time
+		// log.Printf("%s, %s: TODO: handle FirstTime capture\n", sn, tld.Name)
+		return fmt.Errorf("Not Implemented - FirstTime")
+	}
 
-	log.Printf("%s, %s, tld.CaptureTimes: %+v\n", sn, tld.Name, tld.CaptureTimes)
+	if tld.Additional == 1 { // add local time corresponding to solar noon as the additional capture time
+		tld.CaptureTimes = append(tld.CaptureTimes, tld.SolarNoonUTC.In(srv.localLoc))
+	}
+
+	if tld.Additional > 1 { // calculate local times corresponding to additional capture times
+		// log.Printf("%s, %s Additional: %d. TODO: handle Additional capture times\n", sn, tld.Name, tld.Additional)
+		// TODO: Not Implemented - Additional > 1
+	}
+
+	if tld.LastSunset && !tld.LastTime { // add local time of sunset (where this code is running)
+		tld.CaptureTimes = append(tld.CaptureTimes, tld.SunsetUTC.In(srv.localLoc))
+	}
+
+	if tld.LastTime && !tld.LastSunset { // add local time corresponding to specified last capture time
+		// log.Printf("%s, %s LastTime. TODO: handle LastTime capture\n", sn, tld.Name)
+		// TODO: Not Implemented - LastTime")
+	}
+
+	// log.Printf("%s, %s CaptureTimes (len %d): %+v\n",
+	// 	sn, tld.Name, len(tld.CaptureTimes), tld.CaptureTimes)
 	return nil
 }
 
-// UpdateIndexOfNext increments IndexOfNext to reference the next
-// CaptureTime element, or after today's captures have been performed,
-// updates CaptureTimes with tomorrow's capture times
-func (tld TLDef) UpdateIndexOfNext() {
-	sn := "main.tld.UpdateIndexOfNext"
+// UpdateNextCapture adjusts NextCapture to reference the element with the
+// next CaptureTime (first element with time > Now), or if none are left
+// (today's captures have all been performed), updates CaptureTimes with
+// tomorrow's capture times
+func (tld *TLDef) UpdateNextCapture() {
+	sn := "main.tld.UpdateNextCapture"
 
-	log.Printf("%s, %s, enter IndexOfNext: %d\n", sn, tld.Name, tld.IndexOfNext)
+	// log.Printf("%s, %s NextCapture: %d, CaptureTimes (len %d): %v\n",
+	// 	sn, tld.Name, tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
 
-	if (tld.IndexOfNext + 1) > len(tld.CaptureTimes)-1 { // fell off the end of the slice = processed all of today's captures
+	tld.NextCapture = 0
+	now := time.Now().In(srv.localLoc)
+	for _, t := range tld.CaptureTimes {
+		if t.After(now) {
+			break
+		}
+		tld.NextCapture++
+	}
+
+	if tld.NextCapture >= len(tld.CaptureTimes) {
 		tomorrow := time.Now().AddDate(0, 0, 1)
 		tld.SetCaptureTimes(tomorrow) // setup tomorrow's capture times
-		tld.IndexOfNext = 0           // next capture time is tomorrow's first time
-		log.Printf("%s, %s, reset CaptureTimes to tomorrow; tld.IndexOfNext: %d\n", sn, tld.Name, tld.IndexOfNext)
-		return
+		tld.NextCapture = 0           // tomorrow's first time is next
+		log.Printf("%s, %s CaptureTimes set for tomorrow, NextCapture: %d, CaptureTimes (len %d): %v\n",
+			sn, tld.Name, tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
 	}
 
-	current := tld.CaptureTimes[tld.IndexOfNext]
-	next := tld.CaptureTimes[tld.IndexOfNext+1]
-	if !next.After(current) { // next element expected to be after (later than) current element
-		msg := fmt.Sprintf("%s, next entry NOT after current entry, current: %s, next %s\n", sn, current, next)
-		panic(msg)
-	}
-
-	tld.IndexOfNext++
-	log.Printf("%s, %s, tld.IndexOfNext: %d\n", sn, tld.Name, tld.IndexOfNext)
+	log.Printf("%s, %s NextCapture: %d, CaptureTimes (len %d): %v\n",
+		sn, tld.Name, tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
 }
 
 // NextCaptureTime returns the time of the next capture
 func (tld TLDef) NextCaptureTime() time.Time {
-	next := tld.CaptureTimes[tld.IndexOfNext]
+	next := tld.CaptureTimes[tld.NextCapture]
 	return next
 }
 
@@ -415,7 +458,7 @@ type masterTLDefs []TLDef
 func newMasterTLDefs() *masterTLDefs {
 	var mtld = new(masterTLDefs)
 
-	log.Printf("newMasterTLDefs, %p, %+v", mtld, mtld)
+	// log.Printf("newMasterTLDefs, %p, %+v", mtld, mtld)
 	return mtld
 }
 
@@ -493,64 +536,57 @@ func (mtld *masterTLDefs) Append(newTLD *TLDef) error {
 
 // ********** ********** ********** ********** ********** **********
 
-// SSDayInfo holds times of sunrise, sunset and twilight based on date, latitude, and longitude
+// SSDayInfo holds response fields from sunrise-sunset.org
 type SSDayInfo struct { // all times are UTC
 	linkTLDef                 *TLDef // link to associated TLDef
 	Date                      time.Time
 	Latitude                  float64 `json:"-" validate:"latitude,required"`  // Latitude of webcam
 	Longitude                 float64 `json:"-" validate:"longitude,required"` // Longitude of webcam
-	TZName                    string
-	TZLoc                     time.Location
-	SSDISunrise               string `json:"sunrise"`
-	SSDISunset                string `json:"sunset"`
-	SSDISolarNoon             string `json:"solar_noon"`
-	DayLength                 string `json:"day_length"`
-	CivilTwilightBegin        string `json:"civil_twilight_begin"`
-	CivilTwilightEnd          string `json:"civil_twilight_end"`
-	NauticalTwilightBegin     string `json:"nautical_twilight_begin"`
-	NauticalTwilightEnd       string `json:"nautical_twilight_end"`
-	AstronomicalTwilightBegin string `json:"astronomical_twilight_begin"`
-	AstronomicalTwilightEnd   string `json:"astronomical_twilight_end"`
+	SSDISunrise               string  `json:"sunrise"`
+	SSDISunset                string  `json:"sunset"`
+	SSDISolarNoon             string  `json:"solar_noon"`
+	DayLength                 int     `json:"day_length"`
+	CivilTwilightBegin        string  `json:"civil_twilight_begin"`
+	CivilTwilightEnd          string  `json:"civil_twilight_end"`
+	NauticalTwilightBegin     string  `json:"nautical_twilight_begin"`
+	NauticalTwilightEnd       string  `json:"nautical_twilight_end"`
+	AstronomicalTwilightBegin string  `json:"astronomical_twilight_begin"`
+	AstronomicalTwilightEnd   string  `json:"astronomical_twilight_end"`
 }
 
-// Solar holds sun-related times
-type Solar struct {
-	SunriseUTC   time.Time
-	SolarNoonUTC time.Time
-	SunsetUTC    time.Time
-}
-
-// SetSolar updates the TLDef with sunrise, solar noon, and sunset
-// times (UTC) on the specified date and latitude/longitude
-func (tld *TLDef) SetSolar(t time.Time) error {
-	sn := "main.tld.SetSolar"
-
-	log.Printf("%s, %s, enter, t: %v\n", sn, tld.Name, t)
+// GetSolarTimes uses the specified date and the TLDef's latitude/longitude
+// to establish sunrise, solar noon, and sunset times (UTC) and store
+// them in the TLDef
+func (tld *TLDef) GetSolarTimes(date time.Time) error {
+	sn := "main.tld.GetSolarTimes"
+	// log.Printf("%s, %s date: %v\n", sn, tld.Name, date)
 
 	ssdi := NewSSDayInfo(tld)
-	ssdi.Date = t
+	ssdi.Date = date
 
 	query := ssdi.buildQuery()
-	req, err := http.NewRequest("GET", query, nil)
+	method := "GET"
+	req, err := http.NewRequest(method, query, nil)
 	if err != nil {
-		log.Printf("%s, %s, http.NewRequest: %v\n", sn, tld.Name, err)
+		log.Printf("%s, %s http.NewRequest: %v\n", sn, tld.Name, err)
 		return err
 	}
 
+	// log.Printf("%s, %s %s %s\n", sn, tld.Name, method, query)
 	client := &http.Client{Timeout: time.Second * 2}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("%s, %s, http.Client.Do: %v", sn, tld.Name, err)
+		log.Printf("%s, %s http.Client.Do: %v", sn, tld.Name, err)
 		return err
 	}
 	defer resp.Body.Close()
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		log.Printf("%s, %s, ioutil.ReadAll: %v", sn, tld.Name, err)
+		log.Printf("%s, %s ioutil.ReadAll: %v", sn, tld.Name, err)
 		return err
 	}
-	log.Printf("%s, %s, body: %s", sn, tld.Name, body)
+	// log.Printf("%s, %s resp.Body: %s", sn, tld.Name, body)
 
 	// strip off outer structure
 	wrapperStart := []byte(`{"results":`)
@@ -559,35 +595,37 @@ func (tld *TLDef) SetSolar(t time.Time) error {
 		tmpBody := bytes.TrimPrefix(body, wrapperStart)
 		body = bytes.TrimSuffix(tmpBody, wrapperEnd)
 	}
-	// log.Printf("%s, trimmed body: %s\n", sn, body)
+	// log.Printf("%s, %s trimmed body: %s\n", sn, tld.Name, body)
+
+	// change each time's "+00:00" suffix to "Z" to clean up time.Parse result
+	body = bytes.ReplaceAll(body, []byte(`+00:00"`), []byte(`Z"`))
+	// log.Printf("%s, %s trimmed and Z-adjusted body: %s\n", sn, tld.Name, body)
 
 	if err := json.Unmarshal(body, &ssdi); err != nil { // unmarshall all provided fields
-		log.Printf("%s, %s, json.Unmarshal: %v", sn, tld.Name, err)
+		log.Printf("%s, %s json.Unmarshal: %v", sn, tld.Name, err)
 		return err
 	}
-
-	// TODO: incorporate passed-in date into ssdi.* times before parsing
 
 	if tld.SunriseUTC, err = time.Parse(timeLayout, ssdi.SSDISunrise); err != nil {
-		log.Printf("%s, %s, time.Parse(%s): %v", sn, tld.Name, ssdi.SSDISunrise, err)
+		log.Printf("%s, %s time.Parse(%s): %v", sn, tld.Name, ssdi.SSDISunrise, err)
 		return err
 	}
-	log.Printf("%s, %s, SSDISunrise: %s, s.SunriseUTC: %v\n", sn, tld.Name, ssdi.SSDISunrise, tld.SunriseUTC)
 
 	if tld.SolarNoonUTC, err = time.Parse(timeLayout, ssdi.SSDISolarNoon); err != nil {
-		log.Printf("%s, %s, time.Parse(%s): %v", sn, tld.Name, ssdi.SSDISolarNoon, err)
-		return err
-	}
-	if tld.SunsetUTC, err = time.Parse(timeLayout, ssdi.SSDISunset); err != nil {
-		log.Printf("%s, %s. time.Parse(%s): %v", sn, tld.Name, ssdi.SSDISunset, err)
+		log.Printf("%s, %s time.Parse(%s): %v", sn, tld.Name, ssdi.SSDISolarNoon, err)
 		return err
 	}
 
-	log.Printf("%s, %s (%p), SunriseUTC: %v, SolarNoonUTC: %v, SunsetUTC: %v\n", sn, tld.Name, tld, tld.SunriseUTC, tld.SolarNoonUTC, tld.SunsetUTC)
+	if tld.SunsetUTC, err = time.Parse(timeLayout, ssdi.SSDISunset); err != nil {
+		log.Printf("%s, %s time.Parse(%s): %v", sn, tld.Name, ssdi.SSDISunset, err)
+		return err
+	}
+
+	// log.Printf("%s, %s SunriseUTC: %v, SolarNoonUTC: %v, SunsetUTC: %v\n", sn, tld.Name, tld.SunriseUTC, tld.SolarNoonUTC, tld.SunsetUTC)
 	return nil
 }
 
-// NewSSDayInfo returns an initialized SSDayInfo struct
+// NewSSDayInfo creates a new instance of SSDayInfo
 func NewSSDayInfo(tld *TLDef) *SSDayInfo {
 	ssdi := &SSDayInfo{}
 	ssdi.linkTLDef = tld
@@ -597,31 +635,9 @@ func NewSSDayInfo(tld *TLDef) *SSDayInfo {
 	return ssdi
 }
 
-// Sunrise returns the local time of sunrise retrieves data to populate SSDayInfo
-func (ssdi *SSDayInfo) Sunrise() (time.Time, error) {
-	sn := "main.SSDayInfo.Sunrise"
-
-	localLoc, err := time.LoadLocation("Local") // timezone where this code is running
-	if err != nil {
-		msg := fmt.Sprintf("%s, time.LoadLocation(\"Local\"): %v", sn, err)
-		panic(msg)
-	}
-
-	utcSunrise, err := time.Parse(timeLayout, ssdi.SSDISunrise) // time in UTC
-	if err != nil {
-		log.Printf("%s, time.Parse(%s): %v", sn, ssdi.SSDISunrise, err)
-		return time.Time{}, err
-	}
-
-	localSunrise := utcSunrise.In(localLoc) // local time
-
-	log.Printf("%s, sunrise %s local, %s UTC\n", sn, localSunrise, utcSunrise)
-	return localSunrise, nil
-}
-
-// buildQuery returns the query string to get data for SSDayInfo
+// buildQuery returns the query string for sunrise-sunset.org API requests
 func (ssdi SSDayInfo) buildQuery() string {
-	sn := "main.SSDayInfo.buildQuery"
+	// sn := "main.SSDayInfo.buildQuery"
 
 	queryParams := url.Values{}
 
@@ -632,9 +648,117 @@ func (ssdi SSDayInfo) buildQuery() string {
 	date := fmt.Sprintf("%4d-%02d-%02d", year, month, day)
 	queryParams.Add("date", date)
 
+	queryParams.Add("formatted", "0") // ISO 8601, e.g., "2015-05-21T05:05:35+00:00"
+
 	query := "https://api.sunrise-sunset.org/json?"
 	query += queryParams.Encode()
 
-	log.Printf("%s, query: %q\n", sn, query)
+	// log.Printf("%s, %s query: %q\n", sn, ssdi.linkTLDef.Name, query)
+	return query
+}
+
+// TimeZoneDB holds response fields from timezonedb.com
+type TimeZoneDB struct {
+	linkTLDef        *TLDef // link to associated TLDef
+	Status           string `json:"status"`
+	Message          string `json:"message"`
+	CountryCode      string `json:"countryCode"`
+	CountryName      string `json:"countryName"`
+	RegionName       string `json:"regionName"`
+	CityName         string `json:"cityName"`
+	ZoneName         string `json:"zoneName"`
+	Abbreviation     string `json:"abbreviation"`
+	GmtOffset        int    `json:"gmtOffset"`
+	Dst              string `json:"dst"`
+	ZoneStart        int    `json:"zoneStart"`
+	ZoneEnd          int    `json:"zoneEnd"`
+	NextAbbreviation string `json:"nextAbbreviation"`
+	Timestamp        int    `json:"timestamp"`
+	Formatted        string `json:"formatted"`
+}
+
+// NewTimeZoneDB creates a new instance of TimeZoneDB
+func NewTimeZoneDB(tld *TLDef) *TimeZoneDB {
+	tzdb := &TimeZoneDB{}
+	tzdb.linkTLDef = tld
+	return tzdb
+}
+
+// SetWebcamTZ determines and stores the timezone of the webcam
+// based on TLDef's latitude/longitude
+func (tld *TLDef) SetWebcamTZ() error {
+	sn := "main.tld.SetWebcamTZ"
+
+	var err error
+	var req *http.Request
+
+	tzdb := NewTimeZoneDB(tld)
+
+	query := tzdb.buildQuery(tld)
+	method := "GET"
+	req, err = http.NewRequest(method, query, nil)
+	if err != nil {
+		log.Printf("%s, %s http.NewRequest: %v\n", sn, tld.Name, err)
+		return err
+	}
+
+	// log.Printf("%s, %s %s %s\n", sn, tld.Name, method, query)
+	var resp *http.Response
+	for {
+		client := &http.Client{Timeout: time.Second * 2}
+		resp, err = client.Do(req)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			break
+		}
+		if err != nil {
+			log.Printf("%s, %s http.Client.Do: %v", sn, tld.Name, err)
+			return err
+		}
+		if resp.StatusCode == http.StatusTooManyRequests { // rate limited to 1 request/second
+			log.Printf("%s, %s received http.StatusTooMany (429), sleeping 2 seconds...\n", sn, tld.Name)
+			time.Sleep(2 * time.Second)
+		}
+	}
+	defer resp.Body.Close()
+
+	var body []byte
+	body, err = ioutil.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("%s, %s ioutil.ReadAll: %v", sn, tld.Name, err)
+		return err
+	}
+	// log.Printf("%s, %s resp.Body: %s", sn, tld.Name, body)
+
+	if err = json.Unmarshal(body, tzdb); err != nil { // unmarshall all provided fields
+		log.Printf("%s, %s json.Unmarshal: %v", sn, tld.Name, err)
+		return err
+	}
+
+	tld.WebcamTZ = tzdb.ZoneName
+	if tld.WebcamLoc, err = time.LoadLocation(tld.WebcamTZ); err != nil {
+		log.Printf("%s, %s time.LoadLocation(%s): %v", sn, tld.Name, tld.WebcamTZ, err)
+		return err
+	}
+
+	log.Printf("%s, %s WebcamLoc: %v\n", sn, tld.Name, tld.WebcamLoc)
+	return nil
+}
+
+// buildQuery builds the query string for TimeZoneDB.com API requests
+func (tzdb *TimeZoneDB) buildQuery(tld *TLDef) string {
+	// sn := "main.webcamTZ.buildQuery"
+
+	queryParams := url.Values{}
+
+	queryParams.Add("key", srv.config.tzdbAPI)
+	queryParams.Add("format", "json")
+	queryParams.Add("by", "position")
+	queryParams.Add("lat", fmt.Sprintf("%.7f", tld.Latitude))
+	queryParams.Add("lng", fmt.Sprintf("%.7f", tld.Longitude))
+
+	query := "http://api.timezonedb.com/v2.1/get-time-zone?"
+	query += queryParams.Encode()
+
+	// log.Printf("%s, %s query: %q\n", sn, tzdb.linkTLDef.Name, query)
 	return query
 }
