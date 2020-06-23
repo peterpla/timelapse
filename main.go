@@ -35,16 +35,9 @@ const (
 	timeLayout = "2006-01-02T15:04:05Z" // ISO 8601; see https://sunrise-sunset.org/api, https://godoc.org/time#Time.Format and https://ednsquare.com/story/date-and-time-manipulation-golang-with-examples------cU1FjK
 )
 
-func main() {
-	defer catch() // implements recover so panics reported
-	sn := "main"
-
+func init() {
+	sn := "main.init()"
 	var err error
-
-	runtime.GOMAXPROCS(2)
-
-	// use context and cancel with goroutines to handle Ctrl+C
-	ctx, cancel := context.WithCancel(context.Background())
 
 	srv = newServer()
 
@@ -58,6 +51,16 @@ func main() {
 		msg := fmt.Sprintf("%s, srv.mtld.Read: %v", sn, err)
 		panic(msg)
 	}
+}
+
+func main() {
+	defer catch() // implements recover so panics reported
+	sn := "main"
+
+	runtime.GOMAXPROCS(2)
+
+	// use context and cancel with goroutines to handle Ctrl+C
+	ctx, cancel := context.WithCancel(context.Background())
 
 	var wg sync.WaitGroup
 	for _, tld := range *srv.mtld {
@@ -353,6 +356,16 @@ func (tld *TLDef) SetCaptureTimes(date time.Time) error {
 
 	// log.Printf("%s, %s date: %v, CaptureTimes (len %d): %v\n", sn, tld.Name, date, len(tld.CaptureTimes), tld.CaptureTimes)
 
+	lenCT := len(tld.CaptureTimes)
+	if lenCT > 0 {
+		if time.Now().Before(tld.CaptureTimes[lenCT-1]) {
+			msg := fmt.Sprintf("%s %s not all CaptureTimes have passed, tld.CaptureTimes: %v", sn, tld.Name, tld.CaptureTimes)
+			panic(msg)
+		}
+		// all existing TLDef times have passed, start with an empty slice
+		tld.CaptureTimes = []time.Time{} // prefer an empty slice so json.Marshal() will emit "[]"
+	}
+
 	if err = tld.SetWebcamTZ(); err != nil { // establish timezone of webcam
 		log.Printf("%s, %s SetWebcamTZ: %v\n", sn, tld.Name, err)
 		return err
@@ -414,16 +427,16 @@ func (tld *TLDef) UpdateNextCapture() {
 		tld.NextCapture++
 	}
 
+	msg := ""
 	if tld.NextCapture >= len(tld.CaptureTimes) {
 		tomorrow := time.Now().AddDate(0, 0, 1)
 		tld.SetCaptureTimes(tomorrow) // setup tomorrow's capture times
 		tld.NextCapture = 0           // tomorrow's first time is next
-		log.Printf("%s, %s CaptureTimes set for tomorrow, NextCapture: %d, CaptureTimes (len %d): %v\n",
-			sn, tld.Name, tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
+		msg = "CaptureTimes set for tomorrow;"
 	}
 
-	log.Printf("%s, %s NextCapture: %d, CaptureTimes (len %d): %v\n",
-		sn, tld.Name, tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
+	log.Printf("%s, %s %s NextCapture: %d, CaptureTimes (len %d): %v\n",
+		sn, tld.Name, msg, tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
 }
 
 // NextCaptureTime returns the time of the next capture
@@ -685,7 +698,8 @@ func NewTimeZoneDB(tld *TLDef) *TimeZoneDB {
 }
 
 // SetWebcamTZ determines and stores the timezone of the webcam
-// based on TLDef's latitude/longitude
+// based on TLDef's latitude/longitude. It is called daily when
+// capture times for the day are set, to accomodate DST changes.
 func (tld *TLDef) SetWebcamTZ() error {
 	sn := "main.tld.SetWebcamTZ"
 
@@ -740,7 +754,7 @@ func (tld *TLDef) SetWebcamTZ() error {
 		return err
 	}
 
-	log.Printf("%s, %s WebcamLoc: %v\n", sn, tld.Name, tld.WebcamLoc)
+	// log.Printf("%s, %s WebcamLoc: %v\n", sn, tld.Name, tld.WebcamLoc)
 	return nil
 }
 
