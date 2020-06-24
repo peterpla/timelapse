@@ -68,10 +68,11 @@ func main() {
 		// log.Printf("%s, launching goroutine #%d (%s)", sn, i, tld.Name)
 		wg.Add(1)
 		go func(ctx context.Context, tld TLDef, pollInterval int) {
-			log.Printf("goroutine handling %s (%p)\n", tld.Name, &tld)
-
 			tld.SetCaptureTimes(time.Now()) // calculate all capture times for today
 			tld.UpdateNextCapture()
+
+			log.Printf("goroutine handling %s (%p), CaptureTimes (len %d): %v\n",
+				tld.Name, &tld, len(tld.CaptureTimes), tld.CaptureTimes)
 
 			for {
 				select {
@@ -222,6 +223,12 @@ func (s *server) handleNew() httprouter.Handle {
 		if _, ok := r.Form["firstSunrise"]; ok {
 			tld.FirstSunrise = true
 		}
+		if _, ok := r.Form["firstSunrise30"]; ok {
+			tld.FirstSunrise30 = true
+		}
+		if _, ok := r.Form["firstSunrise60"]; ok {
+			tld.FirstSunrise60 = true
+		}
 		if _, ok := r.Form["lastTime"]; ok {
 			tld.LastTime = true
 		}
@@ -321,23 +328,25 @@ func (c *Config) Load() {
 
 // TLDef represents a Timelapse capture definition
 type TLDef struct {
-	Name         string         `json:"name" formam:"name"`                                              // Friendly name of this timelapse definition
-	URL          string         `json:"webcamUrl" formam:"webcamUrl" validate:"url,required"`            // URL of webcam image
-	Latitude     float64        `json:"latitude" formam:"latitude" validate:"latitude,required"`         // Latitude of webcam
-	Longitude    float64        `json:"longitude" formam:"longitude" validate:"longitude,required"`      // Longitude of webcam
-	FirstTime    bool           `json:"firstTime" formam:"firstTime"`                                    // First capture at specific time
-	FirstSunrise bool           `json:"firstSunrise" formam:"firstSunrise"`                              // First capture at "Sunrise + offset"
-	LastTime     bool           `json:"lastTime" formam:"lastTime"`                                      // Last capture at specific time
-	LastSunset   bool           `json:"lastSunset" formam:"lastSunset"`                                  // Last capture at "Sunset - offset"
-	Additional   int            `json:"additional" formam:"additional" validate:"min=0,max=16,required"` // Additional captures per day (in addition to First and Last)
-	FolderPath   string         `json:"folder" formam:"folder" validate:"dir,required"`                  // Folder path to store captures
-	WebcamTZ     string         `json:"-"`                                                               // timezone of the webcam (e.g., "America/Los_Angeles")
-	WebcamLoc    *time.Location `json:"-"`                                                               // time.Locaion of the webcam
-	SunriseUTC   time.Time      `json:"-"`                                                               // sunrise at webcam lat/long (UTC)
-	SolarNoonUTC time.Time      `json:"-"`                                                               // solar noon at webcam lat/long (UTC)
-	SunsetUTC    time.Time      `json:"-"`                                                               // sunset at webcam lat/long (UTC)
-	CaptureTimes []time.Time    `json:"-"`                                                               // Times (in time zone where the code is running) to capture images
-	NextCapture  int            `json:"-"`                                                               // index in CaptureTimes[] of next (future) capture time
+	Name           string         `json:"name" formam:"name"`                                              // Friendly name of this timelapse definition
+	URL            string         `json:"webcamUrl" formam:"webcamUrl" validate:"url,required"`            // URL of webcam image
+	Latitude       float64        `json:"latitude" formam:"latitude" validate:"latitude,required"`         // Latitude of webcam
+	Longitude      float64        `json:"longitude" formam:"longitude" validate:"longitude,required"`      // Longitude of webcam
+	FirstTime      bool           `json:"firstTime" formam:"firstTime"`                                    // First capture at specific time
+	FirstSunrise   bool           `json:"firstSunrise" formam:"firstSunrise"`                              // First capture at Sunrise
+	FirstSunrise30 bool           `json:"firstSunrise30" formam:"firstSunrise30"`                          // ................ Sunrise +30 minutes
+	FirstSunrise60 bool           `json:"firstSunrise60" formam:"firstSunrise60"`                          // ................ Sunrise +60 minutes
+	LastTime       bool           `json:"lastTime" formam:"lastTime"`                                      // Last capture at specific time
+	LastSunset     bool           `json:"lastSunset" formam:"lastSunset"`                                  // Last capture at Sunset
+	Additional     int            `json:"additional" formam:"additional" validate:"min=0,max=16,required"` // Additional captures per day (in addition to First and Last)
+	FolderPath     string         `json:"folder" formam:"folder" validate:"dir,required"`                  // Folder path to store captures
+	WebcamTZ       string         `json:"-"`                                                               // timezone of the webcam (e.g., "America/Los_Angeles")
+	WebcamLoc      *time.Location `json:"-"`                                                               // time.Locaion of the webcam
+	SunriseUTC     time.Time      `json:"-"`                                                               // sunrise at webcam lat/long (UTC)
+	SolarNoonUTC   time.Time      `json:"-"`                                                               // solar noon at webcam lat/long (UTC)
+	SunsetUTC      time.Time      `json:"-"`                                                               // sunset at webcam lat/long (UTC)
+	CaptureTimes   []time.Time    `json:"-"`                                                               // Times (in time zone where the code is running) to capture images
+	NextCapture    int            `json:"-"`                                                               // index in CaptureTimes[] of next (future) capture time
 }
 
 // newTLDef initializes a TLDef structure
@@ -393,6 +402,8 @@ func (tld *TLDef) SetCaptureTimes(date time.Time) error {
 // SetFirstCapture adds FirstTime or FirstSunrise to CaptureTimes
 func (tld *TLDef) SetFirstCapture() error {
 	sn := "SetFirstCapture"
+
+	// TODO: update to account for FirstSunrise30 and FirstSunrise60
 
 	if (tld.FirstSunrise && tld.FirstTime) || (!tld.FirstSunrise && !tld.FirstTime) {
 		return fmt.Errorf("%s, must specify one of Sunrise or First Time", sn)
@@ -512,8 +523,12 @@ func (tld *TLDef) UpdateNextCapture() {
 		msg = "CaptureTimes set for tomorrow;"
 	}
 
-	log.Printf("%s, %s %s NextCapture: %d, CaptureTimes (len %d): %v\n",
-		sn, tld.Name, msg, tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
+	// log.Printf("%s, %s %s NextCapture: %d, CaptureTimes (len %d): %v\n",
+	// 	sn, tld.Name, msg, tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
+	if msg != "" {
+		log.Printf("%s, %s %s NextCapture: %d, CaptureTimes (len %d): %v\n",
+			sn, tld.Name, msg, tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
+	}
 }
 
 // NextCaptureTime returns the time of the next capture
