@@ -362,49 +362,121 @@ func (tld *TLDef) SetCaptureTimes(date time.Time) error {
 			msg := fmt.Sprintf("%s %s not all CaptureTimes have passed, tld.CaptureTimes: %v", sn, tld.Name, tld.CaptureTimes)
 			panic(msg)
 		}
-		// all existing TLDef times have passed, start with an empty slice
-		tld.CaptureTimes = []time.Time{} // prefer an empty slice so json.Marshal() will emit "[]"
+		tld.CaptureTimes = []time.Time{} // all existing TLDef times have passed, start with an empty slice (preferred so json.Marshal() will emit "[]")
 	}
 
 	if err = tld.SetWebcamTZ(); err != nil { // establish timezone of webcam
-		log.Printf("%s, %s SetWebcamTZ: %v\n", sn, tld.Name, err)
+		log.Printf("%s, %s: %v\n", sn, tld.Name, err)
 		return err
 	}
 
 	if err = tld.GetSolarTimes(date); err != nil { // set sunrise, solar noon, and sunset for specified date
-		log.Printf("%s, %s tld.GetSolarTimes: %v\n", sn, tld.Name, err)
+		log.Printf("%s, %s: %v\n", sn, tld.Name, err)
 		return err
 	}
 
-	if tld.FirstSunrise && !tld.FirstTime { // add local time of sunrise (where this code is running)
-		tld.CaptureTimes = append(tld.CaptureTimes, tld.SunriseUTC.In(srv.localLoc))
+	if err := tld.SetFirstCapture(); err != nil {
+		log.Printf("%s, %s: %v\n", sn, tld.Name, err)
+		return err
 	}
 
-	if tld.FirstTime && !tld.FirstSunrise { // add local time corresponding to specified first capture time
-		// log.Printf("%s, %s: TODO: handle FirstTime capture\n", sn, tld.Name)
-		return fmt.Errorf("Not Implemented - FirstTime")
-	}
-
-	if tld.Additional == 1 { // add local time corresponding to solar noon as the additional capture time
-		tld.CaptureTimes = append(tld.CaptureTimes, tld.SolarNoonUTC.In(srv.localLoc))
-	}
-
-	if tld.Additional > 1 { // calculate local times corresponding to additional capture times
-		// log.Printf("%s, %s Additional: %d. TODO: handle Additional capture times\n", sn, tld.Name, tld.Additional)
-		// TODO: Not Implemented - Additional > 1
-	}
-
-	if tld.LastSunset && !tld.LastTime { // add local time of sunset (where this code is running)
-		tld.CaptureTimes = append(tld.CaptureTimes, tld.SunsetUTC.In(srv.localLoc))
-	}
-
-	if tld.LastTime && !tld.LastSunset { // add local time corresponding to specified last capture time
-		// log.Printf("%s, %s LastTime. TODO: handle LastTime capture\n", sn, tld.Name)
-		// TODO: Not Implemented - LastTime")
+	if err := tld.SetAdditional(); err != nil { // also sets Last capture time
+		log.Printf("%s, %s: %v\n", sn, tld.Name, err)
+		return err
 	}
 
 	// log.Printf("%s, %s CaptureTimes (len %d): %+v\n",
 	// 	sn, tld.Name, len(tld.CaptureTimes), tld.CaptureTimes)
+	return nil
+}
+
+// SetFirstCapture adds FirstTime or FirstSunrise to CaptureTimes
+func (tld *TLDef) SetFirstCapture() error {
+	sn := "SetFirstCapture"
+
+	if (tld.FirstSunrise && tld.FirstTime) || (!tld.FirstSunrise && !tld.FirstTime) {
+		return fmt.Errorf("%s, must specify one of Sunrise or First Time", sn)
+	}
+
+	if tld.FirstTime && !tld.FirstSunrise { // add local time corresponding to specified first capture time
+		// TODO: handle FirstTime capture
+		return fmt.Errorf("Not Implemented - FirstTime")
+	}
+
+	// tld.FirstSunrise && !tld.FirstTime - add local time of sunrise (where this code is running)
+	tld.CaptureTimes = append(tld.CaptureTimes, tld.SunriseUTC.In(srv.localLoc))
+	return nil
+}
+
+// SetAdditional adds the the Last capture time, and the specified number of
+// additional capture times to CaptureTimes
+func (tld *TLDef) SetAdditional() error {
+	sn := "SetAdditional"
+
+	if err := tld.SetLastCapture(); err != nil { // establish the last capture time, with error checking
+		log.Printf("%s, %s: %v\n", sn, tld.Name, err)
+		return err
+	}
+
+	// both First and Last captures now in CaptureTimes
+	first := tld.CaptureTimes[0]
+	last := tld.CaptureTimes[1]
+
+	tld.CaptureTimes = *new([]time.Time) // create a new slice with just the first capture time
+	tld.CaptureTimes = append(tld.CaptureTimes, first)
+
+	switch {
+	case tld.Additional == 0:
+		// do nothing
+
+	case tld.Additional == 1:
+		// TODO: handle when Last capture occurs before solar noon
+		// add local time corresponding to solar noon as the additional capture time
+		tld.CaptureTimes = append(tld.CaptureTimes, tld.SolarNoonUTC.In(srv.localLoc))
+
+	case tld.Additional%2 == 0:
+		diff := last.Unix() - first.Unix()
+		interval := diff / (int64)(tld.Additional+1)
+		// intervalDuration := (time.Duration)(interval)
+		// log.Printf("%s, interval %d (%v)\n", sn, interval, intervalDuration*time.Second)
+
+		base := first
+		for i := 0; i < tld.Additional; i++ {
+			toAdd := (time.Duration)(interval) * time.Second
+			next := base.Add(toAdd)
+			next = TimeToSecond(next)
+			tld.CaptureTimes = append(tld.CaptureTimes, next)
+			base = next
+		}
+
+	case tld.Additional%2 == 1:
+		log.Printf("%s, %s: odd - add Solar Noon and %d captures equidistant in range First to solar noon, and solar noon to Last\n",
+			sn, tld.Name, (tld.Additional-2)/2)
+		// TODO: add solar noon and Additional capture times equidistant between First and solar noon, and solar noon and Last
+	}
+
+	tld.CaptureTimes = append(tld.CaptureTimes, last) // add the last capture time to the new slice
+
+	// log.Printf("%s, %s SetAdditional %d, CaptureTimes (len %d): %+v\n",
+	// 	sn, tld.Name, tld.Additional, len(tld.CaptureTimes), tld.CaptureTimes)
+	return nil
+}
+
+// SetLastCapture adds LastTime or LastSunset to CaptureTimes
+func (tld *TLDef) SetLastCapture() error {
+	sn := "SetLastCapture"
+
+	if (tld.LastSunset && tld.LastTime) || (!tld.LastSunset && !tld.LastTime) {
+		return fmt.Errorf("%s, must specify one of Sunset or Last Time", sn)
+	}
+
+	if tld.LastTime && !tld.LastSunset { // add local time corresponding to specified last capture time
+		// TODO: handle LastTime capture
+		return fmt.Errorf("Not Implemented - LastTime")
+	}
+
+	// tld.LastSunset && !tld.LastTime - add local time of sunset (where this code is running)
+	tld.CaptureTimes = append(tld.CaptureTimes, tld.SunsetUTC.In(srv.localLoc))
 	return nil
 }
 
