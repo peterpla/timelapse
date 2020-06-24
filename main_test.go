@@ -289,6 +289,11 @@ func TestTLDef_SetAdditional(t *testing.T) {
 	addTwoTheFirst := time.Date(2020, 5, 27, 10, 35, 32, 0, loc)
 	addTwoTheSecond := time.Date(2020, 5, 27, 15, 31, 23, 0, loc)
 
+	addFourTheFirst := time.Date(2020, 5, 27, 8, 37, 11, 0, loc)
+	addFourTheSecond := time.Date(2020, 5, 27, 11, 34, 41, 0, loc)
+	addFourTheThird := time.Date(2020, 5, 27, 14, 32, 11, 0, loc)
+	addFourTheFourth := time.Date(2020, 5, 27, 17, 29, 41, 0, loc)
+
 	tests := []struct {
 		name string
 		tld  TLDef
@@ -336,6 +341,20 @@ func TestTLDef_SetAdditional(t *testing.T) {
 				CaptureTimes: []time.Time{sunrise, sunset},
 			},
 			want: []time.Time{sunrise, addTwoTheFirst, addTwoTheSecond, sunset}, // the last capture time is set seprately
+		},
+		{name: "add 4",
+			tld: TLDef{
+				Name:         "test",
+				FirstSunrise: true,
+				FirstTime:    false,
+				LastTime:     false,
+				LastSunset:   true,
+				Additional:   4,
+				SunriseUTC:   sunrise.In(time.UTC),
+				SunsetUTC:    sunset.In(time.UTC),
+				CaptureTimes: []time.Time{sunrise, sunset},
+			},
+			want: []time.Time{sunrise, addFourTheFirst, addFourTheSecond, addFourTheThird, addFourTheFourth, sunset}, // the last capture time is set seprately
 		},
 	}
 	for _, tt := range tests {
