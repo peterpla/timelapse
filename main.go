@@ -430,29 +430,18 @@ func (tld *TLDef) SetAdditional() error {
 		// do nothing
 
 	case tld.Additional == 1:
-		// TODO: handle when Last capture occurs before solar noon
+		// TODO: handle when LastTime capture occurs before solar noon
 		// add local time corresponding to solar noon as the additional capture time
 		tld.CaptureTimes = append(tld.CaptureTimes, tld.SolarNoonUTC.In(srv.localLoc))
 
 	case tld.Additional%2 == 0:
-		diff := last.Unix() - first.Unix()
-		interval := diff / (int64)(tld.Additional+1)
-		// intervalDuration := (time.Duration)(interval)
-		// log.Printf("%s, interval %d (%v)\n", sn, interval, intervalDuration*time.Second)
-
-		base := first
-		for i := 0; i < tld.Additional; i++ {
-			toAdd := (time.Duration)(interval) * time.Second
-			next := base.Add(toAdd)
-			next = TimeToSecond(next)
-			tld.CaptureTimes = append(tld.CaptureTimes, next)
-			base = next
-		}
+		tld.SplitTime(first, last, tld.Additional)
 
 	case tld.Additional%2 == 1:
-		log.Printf("%s, %s: odd - add Solar Noon and %d captures equidistant in range First to solar noon, and solar noon to Last\n",
-			sn, tld.Name, (tld.Additional-2)/2)
-		// TODO: add solar noon and Additional capture times equidistant between First and solar noon, and solar noon and Last
+		n := (tld.Additional - 1) / 2                                                  // one of the added capture times will be solar noon
+		tld.SplitTime(first, tld.SolarNoonUTC.In(srv.localLoc), n)                     // add the first half the additional capture times
+		tld.CaptureTimes = append(tld.CaptureTimes, tld.SolarNoonUTC.In(srv.localLoc)) // add solar noon
+		tld.SplitTime(tld.SolarNoonUTC.In(srv.localLoc), last, n)                      // add the second half
 	}
 
 	tld.CaptureTimes = append(tld.CaptureTimes, last) // add the last capture time to the new slice
@@ -460,6 +449,22 @@ func (tld *TLDef) SetAdditional() error {
 	// log.Printf("%s, %s SetAdditional %d, CaptureTimes (len %d): %+v\n",
 	// 	sn, tld.Name, tld.Additional, len(tld.CaptureTimes), tld.CaptureTimes)
 	return nil
+}
+
+// SplitTime adds N capture times between the provided times
+func (tld *TLDef) SplitTime(first time.Time, last time.Time, n int) {
+	diff := last.Unix() - first.Unix()
+	interval := diff / (int64)(n+1)
+
+	base := first
+	for i := 0; i < n; i++ {
+		toAdd := (time.Duration)(interval) * time.Second
+		next := base.Add(toAdd)
+		next = TimeToSecond(next)
+		tld.CaptureTimes = append(tld.CaptureTimes, next)
+		base = next
+	}
+	return
 }
 
 // SetLastCapture adds LastTime or LastSunset to CaptureTimes
