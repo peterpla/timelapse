@@ -8,33 +8,8 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
-
-	"github.com/GoogleCloudPlatform/functions-framework-go/funcframework"
 )
-
-func TestMain(m *testing.M) {
-	funcframework.RegisterHTTPFunction("/", WebcamImage)
-
-	// Use PORT environment variable, or default to 8080.
-	port := "8080"
-	if envPort := os.Getenv("PORT"); envPort != "" {
-		port = envPort
-	}
-
-	go startFramework(port) // call ListenAndServe from a separate go routine so main can listen for signals
-
-	exitcode := m.Run()
-	os.Exit(exitcode)
-}
-
-// startFramework starts funcframework which calls ListenAndServe
-func startFramework(port string) {
-	if err := funcframework.Start(port); err != nil {
-		log.Fatalf("funcframework.Start: %v\n", err)
-	}
-}
 
 func TestWebcamImage(t *testing.T) {
 	var emptyString string
