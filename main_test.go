@@ -1,70 +1,98 @@
 package main
 
 import (
-	"log"
+	"bytes"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
-	"github.com/GoogleCloudPlatform/functions-framework-go/funcframework"
 	"github.com/julienschmidt/httprouter"
-	"github.com/peterpla/timelapse/capture"
 )
 
-func TestMain(m *testing.M) {
-	funcframework.RegisterHTTPFunction("/", capture.WebcamImage)
+var loc = time.Local
+var sunrise = time.Date(2020, 5, 27, 5, 39, 41, 0, loc)   // Sunrise
+var solarNoon = time.Date(2020, 5, 27, 13, 3, 28, 0, loc) // SolarNoon
+var sunset = time.Date(2020, 5, 27, 20, 27, 15, 0, loc)   // Sunset
 
-	// Use PORT environment variable, or default to 8080.
-	port := "8080"
-	if envPort := os.Getenv("PORT"); envPort != "" {
-		port = envPort
+var mins30 time.Duration
+var mins60 time.Duration
+
+func TestMain(m *testing.M) {
+	var err error
+	sn := "TestMain"
+
+	// funcframework.RegisterHTTPFunction("/", capture.WebcamImage)
+
+	srv = newServer()
+	srv.initTemplates("./templates", ".html")
+	srv.router.ServeFiles("/static/*filepath", http.Dir("static"))
+	srv.router.GET("/new", srv.handleNew())
+	srv.router.GET("/", srv.handleHome())
+
+	if err = srv.mtld.Read(filepath.Join(masterPath, masterFile)); err != nil {
+		msg := fmt.Sprintf("%s, srv.mtld.Read: %v", sn, err)
+		panic(msg)
 	}
 
-	go startFramework(port) // call ListenAndServe from a separate go routine so main can listen for signals
+	// Use port from configuration, or PORT environment variable
+	port := srv.config.port
+	if port == "" {
+		port = os.Getenv("PORT")
+	}
+
+	mins30, _ = time.ParseDuration("30m")
+	mins60, _ = time.ParseDuration("60m")
+
+	// go startFramework(port) // call ListenAndServe from a separate go routine so main can listen for signals
 
 	exitcode := m.Run()
 	os.Exit(exitcode)
 }
 
 // startFramework starts funcframework which calls ListenAndServe
-func startFramework(port string) {
-	if err := funcframework.Start(port); err != nil {
-		log.Fatalf("funcframework.Start: %v\n", err)
-	}
-}
-
-func Test_newServer(t *testing.T) {
-	t.Skip()
-	tests := []struct {
-		name string
-		s    *server
-		want httprouter.Handle
-	}{
-		// TODO: Add test cases.
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.s.handleHome(); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("newServer() got %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
+// func startFramework(port string) {
+// 	if err := funcframework.Start(port); err != nil {
+// 		log.Fatalf("funcframework.Start: %v\n", err)
+// 	}
+// }
 
 func Test_server_handleHome(t *testing.T) {
-	t.Skip()
 	tests := []struct {
-		name string
-		s    *server
-		want httprouter.Handle
+		name       string
+		params     []byte
+		wantStatus int
+		body       []byte
 	}{
-		// TODO: Add test cases.
+		{name: "home",
+			params:     []byte(""),
+			wantStatus: http.StatusOK,
+			body:       []byte(""),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.s.handleHome(); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("server.handleHome() = %v, want %v", got, tt.want)
+			req, err := http.NewRequest("GET", "/", bytes.NewReader(tt.params))
+			if err != nil {
+				t.Fatal(err)
+			}
+			rr := httptest.NewRecorder()
+			srv.router.ServeHTTP(rr, req)
+
+			if status := rr.Code; status != tt.wantStatus {
+				t.Errorf("%s, got %d, want %d", tt.name, rr.Code, tt.wantStatus)
+			} else {
+				if len(tt.body) > 0 {
+					got := rr.Body.String()
+					want := (string)(tt.body)
+					if got != want {
+						t.Errorf("%s got %q, want %q", tt.name, got, want)
+					}
+				}
 			}
 		})
 	}
@@ -184,6 +212,8 @@ func TestTLDef_SetCaptureTimes(t *testing.T) {
 				FirstSunrise: true,
 				LastTime:     false,
 				LastSunset:   true,
+				FirstFlags:   firstSunrise,
+				LastFlags:    lastSunset,
 				Additional:   1,
 				FolderPath:   "/Volumes/ExtFiles/OneDrive/Pictures/Timelapse/Kohm-Yah-mah-nee",
 			},
@@ -201,6 +231,8 @@ func TestTLDef_SetCaptureTimes(t *testing.T) {
 				FirstSunrise: true,
 				LastTime:     false,
 				LastSunset:   true,
+				FirstFlags:   firstSunrise,
+				LastFlags:    lastSunset,
 				Additional:   1,
 				FolderPath:   "/Volumes/ExtFiles/OneDrive/Pictures/Timelapse/Kohm-Yah-mah-nee",
 				CaptureTimes: day1Capture,
@@ -214,18 +246,17 @@ func TestTLDef_SetCaptureTimes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := tt.tld.SetCaptureTimes(tt.day); (err != nil) != tt.wantErr {
 				t.Errorf("TLDef.SetCaptureTimes() error = %v, wantErr %v", err, tt.wantErr)
-			}
-			got := tt.tld.CaptureTimes
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("TLDef.SetCaptureTimes() got = %v, want %v", got, tt.want)
+			} else {
+				got := tt.tld.CaptureTimes
+				if !reflect.DeepEqual(got, tt.want) {
+					t.Errorf("TLDef.SetCaptureTimes() got = %v, want %v", got, tt.want)
+				}
 			}
 		})
 	}
 }
 
 func TestTLDef_SetFirstCapture(t *testing.T) {
-	loc := time.Local
-	sunrise := time.Date(2020, 5, 27, 5, 39, 41, 0, loc)
 	// firstTime := time.Date(2020, 5, 27, 6, 0, 1, 0, loc)
 
 	tests := []struct {
@@ -236,12 +267,39 @@ func TestTLDef_SetFirstCapture(t *testing.T) {
 	}{
 		{name: "sunrise",
 			tld: TLDef{
-				FirstTime:    false,
-				FirstSunrise: true,
-				SunriseUTC:   sunrise,
+				FirstTime:      false,
+				FirstSunrise:   true,
+				FirstSunrise30: false,
+				FirstSunrise60: false,
+				FirstFlags:     firstSunrise,
+				SunriseUTC:     sunrise,
 			},
 			wantErr: false,
 			want:    []time.Time{sunrise},
+		},
+		{name: "sunrise30",
+			tld: TLDef{
+				FirstTime:      false,
+				FirstSunrise:   false,
+				FirstSunrise30: true,
+				FirstSunrise60: false,
+				FirstFlags:     firstSunrise30,
+				SunriseUTC:     sunrise,
+			},
+			wantErr: false,
+			want:    []time.Time{sunrise.Add(mins30)},
+		},
+		{name: "sunrise60",
+			tld: TLDef{
+				FirstTime:      false,
+				FirstSunrise:   false,
+				FirstSunrise30: false,
+				FirstSunrise60: true,
+				FirstFlags:     firstSunrise60,
+				SunriseUTC:     sunrise,
+			},
+			wantErr: false,
+			want:    []time.Time{sunrise.Add(mins60)},
 		},
 		// {name: "first time",
 		// 	tld: TLDef{
@@ -251,17 +309,30 @@ func TestTLDef_SetFirstCapture(t *testing.T) {
 		// 	wantErr: false,
 		// 	want:    []time.Time{firstTime},
 		// },
-		{name: "both",
+		{name: "time and sunrise",
 			tld: TLDef{
 				FirstTime:    true,
 				FirstSunrise: true,
+				FirstFlags:   firstSunrise | firstTime,
 			},
 			wantErr: true,
 		},
-		{name: "neither",
+		{name: "sunrise and sunrise30 and sunrise60",
 			tld: TLDef{
-				FirstTime:    false,
-				FirstSunrise: false,
+				FirstSunrise:   true,
+				FirstSunrise30: true,
+				FirstSunrise60: true,
+				FirstFlags:     firstSunrise | firstSunrise30 | firstSunrise60,
+			},
+			wantErr: true,
+		},
+		{name: "none",
+			tld: TLDef{
+				FirstTime:      false,
+				FirstSunrise:   false,
+				FirstSunrise30: false,
+				FirstSunrise60: false,
+				FirstFlags:     0,
 			},
 			wantErr: true,
 		},
@@ -281,11 +352,6 @@ func TestTLDef_SetFirstCapture(t *testing.T) {
 }
 
 func TestTLDef_SetAdditional(t *testing.T) {
-	loc := time.Local
-	sunrise := time.Date(2020, 5, 27, 5, 39, 41, 0, loc)   // Sunrise
-	solarNoon := time.Date(2020, 5, 27, 13, 3, 28, 0, loc) // SolarNoon
-	sunset := time.Date(2020, 5, 27, 20, 27, 15, 0, loc)   // Sunset
-
 	addTwoTheFirst := time.Date(2020, 5, 27, 10, 35, 32, 0, loc)
 	addTwoTheSecond := time.Date(2020, 5, 27, 15, 31, 23, 0, loc)
 
@@ -317,6 +383,8 @@ func TestTLDef_SetAdditional(t *testing.T) {
 				LastTime:     false,
 				LastSunset:   true,
 				Additional:   0,
+				FirstFlags:   firstSunrise,
+				LastFlags:    lastSunset,
 				SunriseUTC:   sunrise.In(time.UTC),
 				SunsetUTC:    sunset.In(time.UTC),
 				CaptureTimes: []time.Time{sunrise},
@@ -331,6 +399,8 @@ func TestTLDef_SetAdditional(t *testing.T) {
 				LastTime:     false,
 				LastSunset:   true,
 				Additional:   1,
+				FirstFlags:   firstSunrise,
+				LastFlags:    lastSunset,
 				SunriseUTC:   sunrise.In(time.UTC),
 				SolarNoonUTC: solarNoon.In(time.UTC),
 				SunsetUTC:    sunset.In(time.UTC),
@@ -346,6 +416,8 @@ func TestTLDef_SetAdditional(t *testing.T) {
 				LastTime:     false,
 				LastSunset:   true,
 				Additional:   2,
+				FirstFlags:   firstSunrise,
+				LastFlags:    lastSunset,
 				SunriseUTC:   sunrise.In(time.UTC),
 				SunsetUTC:    sunset.In(time.UTC),
 				CaptureTimes: []time.Time{sunrise},
@@ -360,6 +432,8 @@ func TestTLDef_SetAdditional(t *testing.T) {
 				LastTime:     false,
 				LastSunset:   true,
 				Additional:   3,
+				FirstFlags:   firstSunrise,
+				LastFlags:    lastSunset,
 				SunriseUTC:   sunrise.In(time.UTC),
 				SolarNoonUTC: solarNoon.In(time.UTC),
 				SunsetUTC:    sunset.In(time.UTC),
@@ -375,6 +449,8 @@ func TestTLDef_SetAdditional(t *testing.T) {
 				LastTime:     false,
 				LastSunset:   true,
 				Additional:   4,
+				FirstFlags:   firstSunrise,
+				LastFlags:    lastSunset,
 				SunriseUTC:   sunrise.In(time.UTC),
 				SunsetUTC:    sunset.In(time.UTC),
 				CaptureTimes: []time.Time{sunrise},
@@ -389,6 +465,8 @@ func TestTLDef_SetAdditional(t *testing.T) {
 				LastTime:     false,
 				LastSunset:   true,
 				Additional:   5,
+				FirstFlags:   firstSunrise,
+				LastFlags:    lastSunset,
 				SunriseUTC:   sunrise.In(time.UTC),
 				SolarNoonUTC: solarNoon.In(time.UTC),
 				SunsetUTC:    sunset.In(time.UTC),
@@ -409,8 +487,6 @@ func TestTLDef_SetAdditional(t *testing.T) {
 }
 
 func TestTLDef_SetLastCapture(t *testing.T) {
-	loc := time.Local
-	sunset := time.Date(2020, 5, 27, 20, 27, 15, 0, loc) // Sunset
 	// lastTime := time.Date(2020, 5, 27, 21, 0, 1, 0, loc)
 
 	tests := []struct {
@@ -421,32 +497,76 @@ func TestTLDef_SetLastCapture(t *testing.T) {
 	}{
 		{name: "sunset",
 			tld: TLDef{
-				LastTime:   false,
-				LastSunset: true,
-				SunsetUTC:  sunset,
+				LastTime:     false,
+				LastSunset:   true,
+				LastSunset30: false,
+				LastSunset60: false,
+				LastFlags:    lastSunset,
+				SunsetUTC:    sunset,
 			},
 			wantErr: false,
 			want:    []time.Time{sunset},
 		},
+		{name: "sunset30",
+			tld: TLDef{
+				LastTime:     false,
+				LastSunset:   false,
+				LastSunset30: true,
+				LastSunset60: false,
+				LastFlags:    lastSunset30,
+				SunsetUTC:    sunset,
+			},
+			wantErr: false,
+			want:    []time.Time{sunset.Add(-mins30)},
+		},
+		{name: "sunset60",
+			tld: TLDef{
+				LastTime:     false,
+				LastSunset:   false,
+				LastSunset30: false,
+				LastSunset60: true,
+				LastFlags:    lastSunset60,
+				SunsetUTC:    sunset,
+			},
+			wantErr: false,
+			want:    []time.Time{sunset.Add(-mins60)},
+		},
 		// {name: "last time",
 		// 	tld: TLDef{
-		// 		LastTime:   true,
-		// 		LastSunset: false,
+		// 		LastTime:     true,
+		// 		LastSunset:   false,
+		// 		LastSunset30: false,
+		// 		LastSunset60: false,
+		// 		LastFlags:    lastSunset,
+		//		SunsetUTC:    sunset,
 		// 	},
 		// 	wantErr: false,
 		// 	want:    []time.Time{lastTime},
 		// },
-		{name: "both",
+		{name: "time and sunset",
 			tld: TLDef{
 				LastTime:   true,
 				LastSunset: true,
+				LastFlags:  lastSunset | lastTime,
 			},
 			wantErr: true,
 		},
-		{name: "neither",
+		{name: "sunset and sunset30 and sunset60",
 			tld: TLDef{
-				LastTime:   false,
-				LastSunset: false,
+				LastSunset:   true,
+				LastSunset30: true,
+				LastSunset60: true,
+				LastFlags:    lastSunset | lastSunset30 | lastSunset60,
+			},
+			wantErr: true,
+		},
+		{name: "none",
+			tld: TLDef{
+				LastTime:     false,
+				LastSunset:   false,
+				LastSunset30: false,
+				LastSunset60: false,
+				LastFlags:    0,
 			},
 			wantErr: true,
 		},
@@ -598,65 +718,66 @@ func Test_masterTLDefs_Write(t *testing.T) {
 
 func Test_masterTLDefs_Append(t *testing.T) {
 	value1 := TLDef{
-		Name:         "testName",
-		URL:          "testURL",
+		Name:         "tldName1",
+		URL:          "tldURL1",
 		FirstTime:    true,
 		FirstSunrise: false,
 		LastTime:     true,
 		LastSunset:   false,
 		Additional:   1,
-		FolderPath:   "testPath",
+		FolderPath:   "tldPath1",
 	}
-	mtldWithValue1 := new(masterTLDefs)
-	*mtldWithValue1 = append(*mtldWithValue1, value1)
+	mtldOneValue := new(masterTLDefs)
+	*mtldOneValue = append(*mtldOneValue, &value1)
 
 	value2 := TLDef{
-		Name:         "testName2",
-		URL:          "testURL2",
+		Name:         "tldName2",
+		URL:          "tldURL2",
 		FirstTime:    false,
 		FirstSunrise: true,
 		LastTime:     false,
 		LastSunset:   true,
 		Additional:   2,
-		FolderPath:   "testPath2",
+		FolderPath:   "tldPath2",
 	}
-	mtldWithValue1AndValue2 := new(masterTLDefs)
-	*mtldWithValue1AndValue2 = append(*mtldWithValue1AndValue2, value1, value2)
+	mtldTwoValues := new(masterTLDefs)
+	*mtldTwoValues = append(*mtldOneValue, &value2)
 
 	type test struct {
 		name     string
 		mtld     *masterTLDefs
-		newTLD   TLDef
+		newTLD   *TLDef
 		expected *masterTLDefs
 	}
 
 	var workingMTLD = new(masterTLDefs)
 
 	tests := []test{
-		{name: "add to empty",
+		{name: "append to empty",
 			mtld:     workingMTLD,
-			newTLD:   value1,
-			expected: mtldWithValue1,
+			newTLD:   &value1,
+			expected: mtldOneValue,
 		},
-		{name: "add second element",
+		{name: "append second element",
 			mtld:     workingMTLD,
-			newTLD:   value2,
-			expected: mtldWithValue1AndValue2,
+			newTLD:   &value2,
+			expected: mtldTwoValues,
 		},
 	}
 
 	for _, tt := range tests {
-		// log.Printf("%s: %+v\n", tt.name, tt.mtld)
-
-		if err := tt.mtld.Append(&tt.newTLD); err != nil {
+		if err := tt.mtld.Append(tt.newTLD); err != nil {
 			t.Fatal(err)
 		}
-		// log.Printf("%s, after Add: %+v\n", tt.name, tt.mtld)
 
-		if !reflect.DeepEqual(tt.expected, tt.mtld) {
-			t.Errorf("%s expected %+v, got %+v", tt.name, tt.expected, tt.mtld)
+		lenMTLD := len(*(tt.mtld))
+		for i := 0; i < lenMTLD; i++ {
+			got := (*tt.mtld)[i]
+			want := (*tt.expected)[i]
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("%s, got %+v, want %+v", tt.name, got, want)
+			}
 		}
-
 	}
 }
 
