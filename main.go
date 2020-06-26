@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"io/ioutil"
 	"log"
+	"math/bits"
 	"net/http"
 	"net/url"
 	"os"
@@ -35,27 +36,32 @@ const (
 	timeLayout = "2006-01-02T15:04:05Z" // ISO 8601; see https://sunrise-sunset.org/api, https://godoc.org/time#Time.Format and https://ednsquare.com/story/date-and-time-manipulation-golang-with-examples------cU1FjK
 )
 
-func init() {
-	sn := "main.init()"
+const (
+	firstSunrise uint = 1 << iota
+	firstSunrise30
+	firstSunrise60
+	firstTime
+)
+
+const (
+	lastSunset uint = 1 << iota
+	lastSunset30
+	lastSunset60
+	lastTime
+)
+
+func main() {
 	var err error
 
-	srv = newServer()
+	defer catch() // implements recover so panics reported
+	sn := "main"
 
-	srv.localLoc, err = time.LoadLocation("Local")
-	if err != nil {
-		msg := fmt.Sprintf("%s, time.LoadLocation(\"Local\"): %v", sn, err)
-		panic(msg)
-	}
+	srv = newServer()
 
 	if err = srv.mtld.Read(filepath.Join(masterPath, masterFile)); err != nil {
 		msg := fmt.Sprintf("%s, srv.mtld.Read: %v", sn, err)
 		panic(msg)
 	}
-}
-
-func main() {
-	defer catch() // implements recover so panics reported
-	sn := "main"
 
 	runtime.GOMAXPROCS(2)
 
@@ -63,15 +69,16 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	var wg sync.WaitGroup
-	for _, tld := range *srv.mtld {
-
-		// log.Printf("%s, launching goroutine #%d (%s)", sn, i, tld.Name)
+	for _, tld := range *(srv.mtld) {
+		// log.Printf("%s, launching goroutine #%d (%s), FirstFlags %b, LastFlags %b",
+		// 	sn, i, tld.Name, tld.FirstFlags, tld.LastFlags)
 		wg.Add(1)
-		go func(ctx context.Context, tld TLDef, pollInterval int) {
-			log.Printf("goroutine handling %s (%p)\n", tld.Name, &tld)
-
+		go func(ctx context.Context, tld *TLDef, pollInterval int) {
 			tld.SetCaptureTimes(time.Now()) // calculate all capture times for today
 			tld.UpdateNextCapture()
+
+			log.Printf("goroutine handling %s (%p), timezone %s, CaptureTimes (len %d): %v, FirstFlags %b, LastFlags %b\n",
+				tld.Name, tld, tld.WebcamTZ, len(tld.CaptureTimes), tld.CaptureTimes, tld.FirstFlags, tld.LastFlags)
 
 			for {
 				select {
@@ -150,9 +157,19 @@ type server struct {
 // newServer creates a new instance of server with router and validation
 // initialized and application configuration loaded
 func newServer() *server {
+	var err error
+	sn := "newServer"
+
 	s := &server{}
 	s.router = httprouter.New()
 	s.validate = validator.New()
+
+	s.localLoc, err = time.LoadLocation("Local")
+	if err != nil {
+		msg := fmt.Sprintf("%s, time.LoadLocation(\"Local\"): %v", sn, err)
+		panic(msg)
+	}
+
 	s.mtld = newMasterTLDefs()
 
 	s.config = &Config{}
@@ -215,18 +232,29 @@ func (s *server) handleNew() httprouter.Handle {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		}
 
-		// handle checkbox values
+		// process checkbox values
 		if _, ok := r.Form["firstTime"]; ok {
 			tld.FirstTime = true
 		}
 		if _, ok := r.Form["firstSunrise"]; ok {
 			tld.FirstSunrise = true
 		}
+		if _, ok := r.Form["firstSunrise30"]; ok {
+			tld.FirstSunrise30 = true
+		}
+		if _, ok := r.Form["firstSunrise60"]; ok {
+			tld.FirstSunrise60 = true
+		}
 		if _, ok := r.Form["lastTime"]; ok {
 			tld.LastTime = true
 		}
 		if _, ok := r.Form["lastSunset"]; ok {
 			tld.LastSunset = true
+		}
+
+		if err := tld.SetFirstLastFlags(); err != nil {
+			log.Printf("%s, SetFirstLastFlags: %v\n", sn, err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
 		}
 
 		// if the FolderPath directory doesn't exist, create it
@@ -314,30 +342,36 @@ func (c *Config) Load() {
 	c.port = viper.GetString("port")
 	c.tzdbAPI = viper.GetString("tzdb_API")
 
-	log.Printf("Config: %+v\n", c)
+	// log.Printf("Config: %+v\n", c)
 }
 
 // ********** ********** ********** ********** ********** **********
 
 // TLDef represents a Timelapse capture definition
 type TLDef struct {
-	Name         string         `json:"name" formam:"name"`                                              // Friendly name of this timelapse definition
-	URL          string         `json:"webcamUrl" formam:"webcamUrl" validate:"url,required"`            // URL of webcam image
-	Latitude     float64        `json:"latitude" formam:"latitude" validate:"latitude,required"`         // Latitude of webcam
-	Longitude    float64        `json:"longitude" formam:"longitude" validate:"longitude,required"`      // Longitude of webcam
-	FirstTime    bool           `json:"firstTime" formam:"firstTime"`                                    // First capture at specific time
-	FirstSunrise bool           `json:"firstSunrise" formam:"firstSunrise"`                              // First capture at "Sunrise + offset"
-	LastTime     bool           `json:"lastTime" formam:"lastTime"`                                      // Last capture at specific time
-	LastSunset   bool           `json:"lastSunset" formam:"lastSunset"`                                  // Last capture at "Sunset - offset"
-	Additional   int            `json:"additional" formam:"additional" validate:"min=0,max=16,required"` // Additional captures per day (in addition to First and Last)
-	FolderPath   string         `json:"folder" formam:"folder" validate:"dir,required"`                  // Folder path to store captures
-	WebcamTZ     string         `json:"-"`                                                               // timezone of the webcam (e.g., "America/Los_Angeles")
-	WebcamLoc    *time.Location `json:"-"`                                                               // time.Locaion of the webcam
-	SunriseUTC   time.Time      `json:"-"`                                                               // sunrise at webcam lat/long (UTC)
-	SolarNoonUTC time.Time      `json:"-"`                                                               // solar noon at webcam lat/long (UTC)
-	SunsetUTC    time.Time      `json:"-"`                                                               // sunset at webcam lat/long (UTC)
-	CaptureTimes []time.Time    `json:"-"`                                                               // Times (in time zone where the code is running) to capture images
-	NextCapture  int            `json:"-"`                                                               // index in CaptureTimes[] of next (future) capture time
+	Name           string         `json:"name" formam:"name"`                                              // Friendly name of this timelapse definition
+	URL            string         `json:"webcamUrl" formam:"webcamUrl" validate:"url,required"`            // URL of webcam image
+	Latitude       float64        `json:"latitude" formam:"latitude" validate:"latitude,required"`         // Latitude of webcam
+	Longitude      float64        `json:"longitude" formam:"longitude" validate:"longitude,required"`      // Longitude of webcam
+	FirstTime      bool           `json:"firstTime" formam:"firstTime"`                                    // First capture at specific time
+	FirstSunrise   bool           `json:"firstSunrise" formam:"firstSunrise"`                              // First capture at Sunrise
+	FirstSunrise30 bool           `json:"firstSunrise30" formam:"firstSunrise30"`                          // ................ Sunrise +30 minutes
+	FirstSunrise60 bool           `json:"firstSunrise60" formam:"firstSunrise60"`                          // ................ Sunrise +60 minutes
+	LastTime       bool           `json:"lastTime" formam:"lastTime"`                                      // Last capture at specific time
+	LastSunset     bool           `json:"lastSunset" formam:"lastSunset"`                                  // Last capture at Sunset
+	LastSunset30   bool           `json:"lastSunset30" formam:"lastSunset30"`                              // ................ Sunrise +30 minutes
+	LastSunset60   bool           `json:"lastSunset60" formam:"lastSunset60"`                              // ................ Sunrise +60 minutes
+	Additional     int            `json:"additional" formam:"additional" validate:"min=0,max=16,required"` // Additional captures per day (in addition to First and Last)
+	FolderPath     string         `json:"folder" formam:"folder" validate:"dir,required"`                  // Folder path to store captures
+	FirstFlags     uint           `json:"-"`                                                               // bit set for First booleans
+	LastFlags      uint           `json:"-"`                                                               // bit set for Last booleans
+	WebcamTZ       string         `json:"-"`                                                               // timezone of the webcam (e.g., "America/Los_Angeles")
+	WebcamLoc      *time.Location `json:"-"`                                                               // time.Locaion of the webcam
+	SunriseUTC     time.Time      `json:"-"`                                                               // sunrise at webcam lat/long (UTC)
+	SolarNoonUTC   time.Time      `json:"-"`                                                               // solar noon at webcam lat/long (UTC)
+	SunsetUTC      time.Time      `json:"-"`                                                               // sunset at webcam lat/long (UTC)
+	CaptureTimes   []time.Time    `json:"-"`                                                               // Times (in time zone where the code is running) to capture images
+	NextCapture    int            `json:"-"`                                                               // index in CaptureTimes[] of next (future) capture time
 }
 
 // newTLDef initializes a TLDef structure
@@ -394,17 +428,78 @@ func (tld *TLDef) SetCaptureTimes(date time.Time) error {
 func (tld *TLDef) SetFirstCapture() error {
 	sn := "SetFirstCapture"
 
-	if (tld.FirstSunrise && tld.FirstTime) || (!tld.FirstSunrise && !tld.FirstTime) {
-		return fmt.Errorf("%s, must specify one of Sunrise or First Time", sn)
+	if bits.OnesCount(tld.FirstFlags) == 0 || bits.OnesCount(tld.FirstFlags) > 1 {
+		return fmt.Errorf("%s, must specify one of Sunrise, Sunrise +30, or Sunrise +60; or First Time", sn)
 	}
 
-	if tld.FirstTime && !tld.FirstSunrise { // add local time corresponding to specified first capture time
-		// TODO: handle FirstTime capture
-		return fmt.Errorf("Not Implemented - FirstTime")
+	var mins30 time.Duration
+	mins30, _ = time.ParseDuration("30m")
+	var mins60 time.Duration
+	mins60, _ = time.ParseDuration("60m")
+
+	switch {
+	case (firstSunrise & tld.FirstFlags) != 0: // add local time of sunrise (where this code is running)
+		tld.CaptureTimes = append(tld.CaptureTimes, tld.SunriseUTC.In(srv.localLoc))
+	case (firstSunrise30 & tld.FirstFlags) != 0: // add local time of sunrise + 30 minutes
+		tld.CaptureTimes = append(tld.CaptureTimes, tld.SunriseUTC.In(srv.localLoc).Add(mins30))
+	case (firstSunrise60 & tld.FirstFlags) != 0: // add local time of sunrise + 60 minutes
+		tld.CaptureTimes = append(tld.CaptureTimes, tld.SunriseUTC.In(srv.localLoc).Add(mins60))
 	}
 
-	// tld.FirstSunrise && !tld.FirstTime - add local time of sunrise (where this code is running)
-	tld.CaptureTimes = append(tld.CaptureTimes, tld.SunriseUTC.In(srv.localLoc))
+	// log.Printf("%s, %s CaptureTimes (len %d): %+v\n",
+	// 	sn, tld.Name, len(tld.CaptureTimes), tld.CaptureTimes)
+	return nil
+}
+
+// SetFirstLastFlags sets the FirstFlags and LastFlags bitmaps based on
+// the TLDef values First* and Last*, for easier error checking
+func (tld *TLDef) SetFirstLastFlags() error {
+	sn := "SetFirstLastFlags"
+
+	tld.FirstFlags = 0
+	if tld.FirstTime == true {
+		tld.FirstFlags = tld.FirstFlags | firstTime
+		// log.Printf("%s, %s: FirstTime found, FirstFlags %b\n", sn, tld.Name, tld.FirstFlags)
+	}
+	if tld.FirstSunrise == true {
+		tld.FirstFlags = tld.FirstFlags | firstSunrise
+		// log.Printf("%s, %s: FirstSunrise found, FirstFlags %b\n", sn, tld.Name, tld.FirstFlags)
+	}
+	if tld.FirstSunrise30 == true {
+		tld.FirstFlags = tld.FirstFlags | firstSunrise30
+		// log.Printf("%s, %s: FirstSunrise30 found, FirstFlags %b\n", sn, tld.Name, tld.FirstFlags)
+	}
+	if tld.FirstSunrise60 == true {
+		tld.FirstFlags = tld.FirstFlags | firstSunrise60
+		// log.Printf("%s, %s: FirstSunrise60 found, FirstFlags %b\n", sn, tld.Name, tld.FirstFlags)
+	}
+	if bits.OnesCount(tld.FirstFlags) == 0 || bits.OnesCount(tld.FirstFlags) > 1 {
+		// return fmt.Errorf("%s, must specify one of Sunrise, Sunrise +30, or Sunrise +60; or First Time", sn)
+	}
+
+	tld.LastFlags = 0
+	if tld.LastTime == true {
+		tld.LastFlags = tld.LastFlags | lastTime
+		// log.Printf("%s, %s: LastTime found, LastFlags %b\n", sn, tld.Name, tld.LastFlags)
+	}
+	if tld.LastSunset == true {
+		tld.LastFlags = tld.LastFlags | lastSunset
+		// log.Printf("%s, %s: LastSunset found, LastFlags %b\n", sn, tld.Name, tld.LastFlags)
+	}
+	if tld.LastSunset30 == true {
+		tld.LastFlags = tld.LastFlags | lastSunset30
+		// log.Printf("%s, %s: LastSunset30 found, LastFlags %b\n", sn, tld.Name, tld.LastFlags)
+	}
+	if tld.LastSunset60 == true {
+		tld.LastFlags = tld.LastFlags | lastSunset60
+		// log.Printf("%s, %s: LastSunset60 found, LastFlags %b\n", sn, tld.Name, tld.LastFlags)
+	}
+	if bits.OnesCount(tld.LastFlags) == 0 || bits.OnesCount(tld.LastFlags) > 1 {
+		return fmt.Errorf("%s, must specify one of Sunset or Last Time", sn)
+	}
+
+	// log.Printf("%s, exit SetFirstLastFlags for TLDef (%p), tld.FirstFlags %b, tld.LastFlags %b\n",
+	// 	sn, tld, tld.FirstFlags, tld.LastFlags)
 	return nil
 }
 
@@ -471,17 +566,26 @@ func (tld *TLDef) SplitTime(first time.Time, last time.Time, n int) {
 func (tld *TLDef) SetLastCapture() error {
 	sn := "SetLastCapture"
 
-	if (tld.LastSunset && tld.LastTime) || (!tld.LastSunset && !tld.LastTime) {
-		return fmt.Errorf("%s, must specify one of Sunset or Last Time", sn)
+	if bits.OnesCount(tld.LastFlags) == 0 || bits.OnesCount(tld.LastFlags) > 1 {
+		return fmt.Errorf("%s, must specify one of Sunset, Sunset -30, or Sunset -60; or Last Time", sn)
 	}
 
-	if tld.LastTime && !tld.LastSunset { // add local time corresponding to specified last capture time
-		// TODO: handle LastTime capture
-		return fmt.Errorf("Not Implemented - LastTime")
+	var mins30 time.Duration
+	mins30, _ = time.ParseDuration("30m")
+	var mins60 time.Duration
+	mins60, _ = time.ParseDuration("60m")
+
+	switch {
+	case (lastSunset & tld.LastFlags) != 0: // add local time of sunset (where this code is running)
+		tld.CaptureTimes = append(tld.CaptureTimes, tld.SunsetUTC.In(srv.localLoc))
+	case (lastSunset30 & tld.LastFlags) != 0: // "add" -30 minutes to local time of sunset
+		tld.CaptureTimes = append(tld.CaptureTimes, tld.SunsetUTC.In(srv.localLoc).Add(-mins30))
+	case (lastSunset60 & tld.LastFlags) != 0: // "add" -60 minutes to local time of sunset
+		tld.CaptureTimes = append(tld.CaptureTimes, tld.SunsetUTC.In(srv.localLoc).Add(-mins60))
 	}
 
-	// tld.LastSunset && !tld.LastTime - add local time of sunset (where this code is running)
-	tld.CaptureTimes = append(tld.CaptureTimes, tld.SunsetUTC.In(srv.localLoc))
+	// log.Printf("%s, %s CaptureTimes (len %d): %+v\n",
+	// 	sn, tld.Name, len(tld.CaptureTimes), tld.CaptureTimes)
 	return nil
 }
 
@@ -512,8 +616,12 @@ func (tld *TLDef) UpdateNextCapture() {
 		msg = "CaptureTimes set for tomorrow;"
 	}
 
-	log.Printf("%s, %s %s NextCapture: %d, CaptureTimes (len %d): %v\n",
-		sn, tld.Name, msg, tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
+	// log.Printf("%s, %s %s NextCapture: %d, CaptureTimes (len %d): %v\n",
+	// 	sn, tld.Name, msg, tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
+	if msg != "" {
+		log.Printf("%s, %s %s NextCapture: %d, CaptureTimes (len %d): %v\n",
+			sn, tld.Name, msg, tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
+	}
 }
 
 // NextCaptureTime returns the time of the next capture
@@ -542,7 +650,7 @@ func TimeToSecond(t time.Time) time.Time {
 
 // ********** ********** ********** ********** ********** **********
 
-type masterTLDefs []TLDef
+type masterTLDefs []*TLDef
 
 // newMasterTLDefs returns a new (empty) master timelapse definition object
 func newMasterTLDefs() *masterTLDefs {
@@ -580,6 +688,13 @@ func (mtld masterTLDefs) Read(path string) error {
 			log.Printf("%s, validate.Struct, element %d (%s): %v\n", sn, i, tld.Name, err)
 			return err
 		}
+		// log.Printf("%s, validated mtld element %d: (%p) %+v\n", sn, i, &tld, tld)
+
+		if err := tld.SetFirstLastFlags(); err != nil {
+			log.Printf("%s, %s: SetFirstLastFlags: %v\n", sn, tld.Name, err)
+			return err
+		}
+		// log.Printf("%s, after SetFirstLastFlags, mtld element %d: (%p) %+v\n", sn, i, &tld, tld)
 	}
 
 	return nil
@@ -595,7 +710,7 @@ func (mtld masterTLDefs) Write() error {
 	// validate the TLDefs in mtld before writing them
 	mtldSlice := mtld
 	for i, tld := range mtldSlice { // validate the TLDef structs within mtld
-		if err := srv.validate.Struct(tld); err != nil {
+		if err := srv.validate.Struct(&tld); err != nil {
 			log.Printf("%s, validate.Struct, element %d (%s): %v\n", sn, i, tld.Name, err)
 			return err
 		}
@@ -618,9 +733,9 @@ func (mtld masterTLDefs) Write() error {
 
 // Append appends a timelapse definition to the masterTLDefs slice
 func (mtld *masterTLDefs) Append(newTLD *TLDef) error {
-	*mtld = append(*mtld, *newTLD)
+	*mtld = append(*mtld, newTLD)
 
-	// log.Printf("mtld.Add, %+v", mtld)
+	// log.Printf("mtld.Add, %+v", *mtld)
 	return nil
 }
 
