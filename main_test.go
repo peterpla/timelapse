@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
-
-	"github.com/julienschmidt/httprouter"
 )
 
 var loc = time.Local
@@ -31,7 +31,7 @@ func TestMain(m *testing.M) {
 	srv = newServer()
 	srv.initTemplates("./templates", ".html")
 	srv.router.ServeFiles("/static/*filepath", http.Dir("static"))
-	srv.router.GET("/new", srv.handleNew())
+	srv.router.POST("/new", srv.handleNew())
 	srv.router.GET("/", srv.handleHome())
 
 	if err = srv.mtld.Read(filepath.Join(masterPath, masterFile)); err != nil {
@@ -66,12 +66,12 @@ func Test_server_handleHome(t *testing.T) {
 		name       string
 		params     []byte
 		wantStatus int
-		body       []byte
+		substring  []byte
 	}{
 		{name: "home",
 			params:     []byte(""),
 			wantStatus: http.StatusOK,
-			body:       []byte(""),
+			substring:  []byte("<title>Timelapse</title>"),
 		},
 	}
 	for _, tt := range tests {
@@ -86,11 +86,11 @@ func Test_server_handleHome(t *testing.T) {
 			if status := rr.Code; status != tt.wantStatus {
 				t.Errorf("%s, got %d, want %d", tt.name, rr.Code, tt.wantStatus)
 			} else {
-				if len(tt.body) > 0 {
+				if len(tt.substring) > 0 {
 					got := rr.Body.String()
-					want := (string)(tt.body)
-					if got != want {
-						t.Errorf("%s got %q, want %q", tt.name, got, want)
+					want := (string)(tt.substring)
+					if !strings.Contains(got, want) {
+						t.Errorf("%s want substring %q, not found in %q", tt.name, want, got)
 					}
 				}
 			}
@@ -99,18 +99,165 @@ func Test_server_handleHome(t *testing.T) {
 }
 
 func Test_server_handleNew(t *testing.T) {
-	t.Skip()
 	tests := []struct {
-		name string
-		s    *server
-		want httprouter.Handle
+		name       string
+		params     map[string]string
+		wantStatus int
+		substring  []byte
 	}{
-		// TODO: Add test cases.
+		{name: "min valid",
+			params: map[string]string{
+				"name":         "test1-kona",
+				"webcamUrl":    "https://www.konaweb.com/cam/guardian/22.jpg",
+				"latitude":     "19.6401882",
+				"longitude":    "-155.9957959",
+				"firstSunrise": "",
+				"lastSunset":   "",
+				"additional":   "0",
+				"folder":       "/Volumes/ExtFiles/OneDrive/Pictures/Timelapse/zzTest",
+			},
+			wantStatus: http.StatusSeeOther,
+			substring:  []byte(""),
+		},
+		{name: "missing name",
+			params: map[string]string{
+				// "name":         "test1-kona",
+				"webcamUrl":    "https://www.konaweb.com/cam/guardian/22.jpg",
+				"latitude":     "19.6401882",
+				"longitude":    "-155.9957959",
+				"firstSunrise": "",
+				"lastSunset":   "",
+				"additional":   "0",
+				"folder":       "/Volumes/ExtFiles/OneDrive/Pictures/Timelapse/zzTest",
+			},
+			wantStatus: http.StatusBadRequest,
+			substring:  []byte(""),
+		},
+		{name: "missing webcamUrl",
+			params: map[string]string{
+				"name": "test1-kona",
+				// "webcamUrl":    "https://www.konaweb.com/cam/guardian/22.jpg",
+				"latitude":     "19.6401882",
+				"longitude":    "-155.9957959",
+				"firstSunrise": "",
+				"lastSunset":   "",
+				"additional":   "0",
+				"folder":       "/Volumes/ExtFiles/OneDrive/Pictures/Timelapse/zzTest",
+			},
+			wantStatus: http.StatusBadRequest,
+			substring:  []byte(""),
+		},
+		{name: "missing lat",
+			params: map[string]string{
+				"name":      "test1-kona",
+				"webcamUrl": "https://www.konaweb.com/cam/guardian/22.jpg",
+				// "latitude":     "19.6401882",
+				"longitude":    "-155.9957959",
+				"firstSunrise": "",
+				"lastSunset":   "",
+				"additional":   "0",
+				"folder":       "/Volumes/ExtFiles/OneDrive/Pictures/Timelapse/zzTest",
+			},
+			wantStatus: http.StatusBadRequest,
+			substring:  []byte(""),
+		},
+		{name: "missing long",
+			params: map[string]string{
+				"name":      "test1-kona",
+				"webcamUrl": "https://www.konaweb.com/cam/guardian/22.jpg",
+				"latitude":  "19.6401882",
+				// "longitude":    "-155.9957959",
+				"firstSunrise": "",
+				"lastSunset":   "",
+				"additional":   "0",
+				"folder":       "/Volumes/ExtFiles/OneDrive/Pictures/Timelapse/zzTest",
+			},
+			wantStatus: http.StatusBadRequest,
+			substring:  []byte(""),
+		},
+		{name: "missing additional",
+			params: map[string]string{
+				"name":         "test1-kona",
+				"webcamUrl":    "https://www.konaweb.com/cam/guardian/22.jpg",
+				"latitude":     "19.6401882",
+				"longitude":    "-155.9957959",
+				"firstSunrise": "",
+				"lastSunset":   "",
+				// "additional":   "0",
+				"folder": "/Volumes/ExtFiles/OneDrive/Pictures/Timelapse/zzTest",
+			},
+			wantStatus: http.StatusBadRequest,
+			substring:  []byte(""),
+		},
+		{name: "additional too small",
+			params: map[string]string{
+				"name":         "test1-kona",
+				"webcamUrl":    "https://www.konaweb.com/cam/guardian/22.jpg",
+				"latitude":     "19.6401882",
+				"longitude":    "-155.9957959",
+				"firstSunrise": "",
+				"lastSunset":   "",
+				"additional":   "-1",
+				"folder":       "/Volumes/ExtFiles/OneDrive/Pictures/Timelapse/zzTest",
+			},
+			wantStatus: http.StatusBadRequest,
+			substring:  []byte(""),
+		},
+		{name: "additional too big",
+			params: map[string]string{
+				"name":         "test1-kona",
+				"webcamUrl":    "https://www.konaweb.com/cam/guardian/22.jpg",
+				"latitude":     "19.6401882",
+				"longitude":    "-155.9957959",
+				"firstSunrise": "",
+				"lastSunset":   "",
+				"additional":   "17",
+				"folder":       "/Volumes/ExtFiles/OneDrive/Pictures/Timelapse/zzTest",
+			},
+			wantStatus: http.StatusBadRequest,
+			substring:  []byte(""),
+		},
+		{name: "missing folder",
+			params: map[string]string{
+				"name":         "test1-kona",
+				"webcamUrl":    "https://www.konaweb.com/cam/guardian/22.jpg",
+				"latitude":     "19.6401882",
+				"longitude":    "-155.9957959",
+				"firstSunrise": "",
+				"lastSunset":   "",
+				"additional":   "0",
+				// "folder":       "/Volumes/ExtFiles/OneDrive/Pictures/Timelapse/zzTest",
+			},
+			wantStatus: http.StatusBadRequest,
+			substring:  []byte(""),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.s.handleNew(); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("server.handleNew() = %v, want %v", got, tt.want)
+			reqParams := url.Values{}
+			for k, v := range tt.params {
+				reqParams.Add(k, v)
+			}
+			body := reqParams.Encode()
+			req, err := http.NewRequest("POST", "/new", strings.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+
+			rr := httptest.NewRecorder()
+			srv.router.ServeHTTP(rr, req)
+
+			if status := rr.Code; status != tt.wantStatus {
+				t.Errorf("%s, got %d, want %d", tt.name, rr.Code, tt.wantStatus)
+			} else {
+				if len(tt.substring) > 0 {
+					got := rr.Body.String()
+					want := (string)(tt.substring)
+					if !strings.Contains(got, want) {
+						t.Errorf("%s want substring %q, not found in %q", tt.name, want, got)
+					}
+				}
 			}
 		})
 	}
