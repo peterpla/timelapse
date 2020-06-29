@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -102,7 +103,7 @@ func main() {
 
 	srv.initTemplates("./templates", ".html")
 	srv.router.ServeFiles("/static/*filepath", http.Dir("static"))
-	srv.router.GET("/new", srv.handleNew())
+	srv.router.POST("/new", srv.handleNew())
 	srv.router.GET("/", srv.handleHome())
 
 	hs := http.Server{
@@ -224,12 +225,36 @@ func (s *server) handleNew() httprouter.Handle {
 		if err := decoder.Decode(r.Form, tld); err != nil {
 			log.Printf("%s, decoder.Decode: %v\n", sn, err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 
 		// validate the TLDef we just decoded
 		if err := srv.validate.Struct(tld); err != nil {
 			log.Printf("%s, handleNew: %v\n", sn, err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// validator package doesn't allow required numbers to be zero, so validate manually
+		if _, ok := r.Form["additional"]; !ok { // additional not present
+			msg := "Additional is required"
+			log.Printf("%s, handleNew: %s\n", sn, msg)
+			http.Error(w, msg, http.StatusBadRequest)
+			return
+		}
+		if _, ok := r.Form["additional"]; ok {
+			formVal := r.Form["additional"]
+			value, err := strconv.Atoi(formVal[0])
+			if err != nil {
+				log.Printf("%s, handleNew: strconv.Atoi(%s) %s\n", sn, formVal, err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if value < 0 || value > 16 {
+				msg := "Additional must be 0-16"
+				log.Printf("%s, handleNew: %s\n", sn, msg)
+				http.Error(w, msg, http.StatusBadRequest)
+				return
+			}
 		}
 
 		// process checkbox values
@@ -255,12 +280,14 @@ func (s *server) handleNew() httprouter.Handle {
 		if err := tld.SetFirstLastFlags(); err != nil {
 			log.Printf("%s, SetFirstLastFlags: %v\n", sn, err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
 		}
 
 		// if the FolderPath directory doesn't exist, create it
 		if err := os.MkdirAll(tld.FolderPath, 0664); err != nil { // octal for -rw-rw-r--: owner read/write, group/other read-only
 			log.Printf("%s, os.MkdirAll: %v\n", sn, err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 		// log.Printf("handleNew, TLDef: %+v", tld)
 
@@ -268,6 +295,7 @@ func (s *server) handleNew() httprouter.Handle {
 		if err := srv.mtld.Write(); err != nil {
 			log.Printf("%s, srv.mtld.Write: %v\n", sn, err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 
 		http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -349,29 +377,29 @@ func (c *Config) Load() {
 
 // TLDef represents a Timelapse capture definition
 type TLDef struct {
-	Name           string         `json:"name" formam:"name"`                                              // Friendly name of this timelapse definition
-	URL            string         `json:"webcamUrl" formam:"webcamUrl" validate:"url,required"`            // URL of webcam image
-	Latitude       float64        `json:"latitude" formam:"latitude" validate:"latitude,required"`         // Latitude of webcam
-	Longitude      float64        `json:"longitude" formam:"longitude" validate:"longitude,required"`      // Longitude of webcam
-	FirstTime      bool           `json:"firstTime" formam:"firstTime"`                                    // First capture at specific time
-	FirstSunrise   bool           `json:"firstSunrise" formam:"firstSunrise"`                              // First capture at Sunrise
-	FirstSunrise30 bool           `json:"firstSunrise30" formam:"firstSunrise30"`                          // ................ Sunrise +30 minutes
-	FirstSunrise60 bool           `json:"firstSunrise60" formam:"firstSunrise60"`                          // ................ Sunrise +60 minutes
-	LastTime       bool           `json:"lastTime" formam:"lastTime"`                                      // Last capture at specific time
-	LastSunset     bool           `json:"lastSunset" formam:"lastSunset"`                                  // Last capture at Sunset
-	LastSunset30   bool           `json:"lastSunset30" formam:"lastSunset30"`                              // ................ Sunrise +30 minutes
-	LastSunset60   bool           `json:"lastSunset60" formam:"lastSunset60"`                              // ................ Sunrise +60 minutes
-	Additional     int            `json:"additional" formam:"additional" validate:"min=0,max=16,required"` // Additional captures per day (in addition to First and Last)
-	FolderPath     string         `json:"folder" formam:"folder" validate:"dir,required"`                  // Folder path to store captures
-	FirstFlags     uint           `json:"-"`                                                               // bit set for First booleans
-	LastFlags      uint           `json:"-"`                                                               // bit set for Last booleans
-	WebcamTZ       string         `json:"-"`                                                               // timezone of the webcam (e.g., "America/Los_Angeles")
-	WebcamLoc      *time.Location `json:"-"`                                                               // time.Locaion of the webcam
-	SunriseUTC     time.Time      `json:"-"`                                                               // sunrise at webcam lat/long (UTC)
-	SolarNoonUTC   time.Time      `json:"-"`                                                               // solar noon at webcam lat/long (UTC)
-	SunsetUTC      time.Time      `json:"-"`                                                               // sunset at webcam lat/long (UTC)
-	CaptureTimes   []time.Time    `json:"-"`                                                               // Times (in time zone where the code is running) to capture images
-	NextCapture    int            `json:"-"`                                                               // index in CaptureTimes[] of next (future) capture time
+	Name           string         `json:"name" formam:"name" validate:"required"`                     // Friendly name of this timelapse definition
+	URL            string         `json:"webcamUrl" formam:"webcamUrl" validate:"url,required"`       // URL of webcam image
+	Latitude       float64        `json:"latitude" formam:"latitude" validate:"latitude,required"`    // Latitude of webcam
+	Longitude      float64        `json:"longitude" formam:"longitude" validate:"longitude,required"` // Longitude of webcam
+	FirstTime      bool           `json:"firstTime" formam:"firstTime"`                               // First capture at specific time
+	FirstSunrise   bool           `json:"firstSunrise" formam:"firstSunrise"`                         // First capture at Sunrise
+	FirstSunrise30 bool           `json:"firstSunrise30" formam:"firstSunrise30"`                     // ................ Sunrise +30 minutes
+	FirstSunrise60 bool           `json:"firstSunrise60" formam:"firstSunrise60"`                     // ................ Sunrise +60 minutes
+	LastTime       bool           `json:"lastTime" formam:"lastTime"`                                 // Last capture at specific time
+	LastSunset     bool           `json:"lastSunset" formam:"lastSunset"`                             // Last capture at Sunset
+	LastSunset30   bool           `json:"lastSunset30" formam:"lastSunset30"`                         // ................ Sunrise +30 minutes
+	LastSunset60   bool           `json:"lastSunset60" formam:"lastSunset60"`                         // ................ Sunrise +60 minutes
+	Additional     int            `json:"additional" formam:"additional"`                             // Additional captures per day (in addition to First and Last)
+	FolderPath     string         `json:"folder" formam:"folder" validate:"dir,required"`             // Folder path to store captures
+	FirstFlags     uint           `json:"-"`                                                          // bit set for First booleans
+	LastFlags      uint           `json:"-"`                                                          // bit set for Last booleans
+	WebcamTZ       string         `json:"-"`                                                          // timezone of the webcam (e.g., "America/Los_Angeles")
+	WebcamLoc      *time.Location `json:"-"`                                                          // time.Locaion of the webcam
+	SunriseUTC     time.Time      `json:"-"`                                                          // sunrise at webcam lat/long (UTC)
+	SolarNoonUTC   time.Time      `json:"-"`                                                          // solar noon at webcam lat/long (UTC)
+	SunsetUTC      time.Time      `json:"-"`                                                          // sunset at webcam lat/long (UTC)
+	CaptureTimes   []time.Time    `json:"-"`                                                          // Times (in time zone where the code is running) to capture images
+	NextCapture    int            `json:"-"`                                                          // index in CaptureTimes[] of next (future) capture time
 }
 
 // newTLDef initializes a TLDef structure
@@ -710,7 +738,7 @@ func (mtld masterTLDefs) Write() error {
 	// validate the TLDefs in mtld before writing them
 	mtldSlice := mtld
 	for i, tld := range mtldSlice { // validate the TLDef structs within mtld
-		if err := srv.validate.Struct(&tld); err != nil {
+		if err := srv.validate.Struct(tld); err != nil {
 			log.Printf("%s, validate.Struct, element %d (%s): %v\n", sn, i, tld.Name, err)
 			return err
 		}
