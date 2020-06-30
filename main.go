@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -76,7 +77,7 @@ func main() {
 		wg.Add(1)
 		go func(ctx context.Context, tld *TLDef, pollInterval int) {
 			tld.SetCaptureTimes(time.Now()) // calculate all capture times for today
-			tld.UpdateNextCapture()
+			tld.UpdateNextCapture(time.Now())
 
 			log.Printf("goroutine handling %s (%p), timezone %s, CaptureTimes (len %d): %v, FirstFlags %b, LastFlags %b\n",
 				tld.Name, tld, tld.WebcamTZ, len(tld.CaptureTimes), tld.CaptureTimes, tld.FirstFlags, tld.LastFlags)
@@ -91,7 +92,7 @@ func main() {
 					if tld.IsTimeForCapture() {
 						// capture and store the image
 						log.Printf("********** %s image captured (not really)\n", tld.Name)
-						tld.UpdateNextCapture()
+						tld.UpdateNextCapture(time.Now())
 					}
 				}
 				// log.Printf("TLDef %s sleeping for %d seconds...\n", tld.Name, pollInterval)
@@ -375,6 +376,9 @@ func (c *Config) Load() {
 
 // ********** ********** ********** ********** ********** **********
 
+// CaptureTimes hold the series of webcam capture times
+type CaptureTimes []time.Time
+
 // TLDef represents a Timelapse capture definition
 type TLDef struct {
 	Name           string         `json:"name" formam:"name" validate:"required"`                     // Friendly name of this timelapse definition
@@ -398,7 +402,7 @@ type TLDef struct {
 	SunriseUTC     time.Time      `json:"-"`                                                          // sunrise at webcam lat/long (UTC)
 	SolarNoonUTC   time.Time      `json:"-"`                                                          // solar noon at webcam lat/long (UTC)
 	SunsetUTC      time.Time      `json:"-"`                                                          // sunset at webcam lat/long (UTC)
-	CaptureTimes   []time.Time    `json:"-"`                                                          // Times (in time zone where the code is running) to capture images
+	CaptureTimes   CaptureTimes   `json:"-"`                                                          // Times (in time zone where the code is running) to capture images
 	NextCapture    int            `json:"-"`                                                          // index in CaptureTimes[] of next (future) capture time
 }
 
@@ -446,6 +450,8 @@ func (tld *TLDef) SetCaptureTimes(date time.Time) error {
 		log.Printf("%s, %s: %v\n", sn, tld.Name, err)
 		return err
 	}
+
+	sort.Sort(tld.CaptureTimes)
 
 	// log.Printf("%s, %s CaptureTimes (len %d): %+v\n",
 	// 	sn, tld.Name, len(tld.CaptureTimes), tld.CaptureTimes)
@@ -569,9 +575,24 @@ func (tld *TLDef) SetAdditional() error {
 
 	tld.CaptureTimes = append(tld.CaptureTimes, last) // add the last capture time to the new slice
 
+	// log.Printf("%s, %s IsSorted %t\n", sn, tld.Name, sort.IsSorted(tld.CaptureTimes))
+
 	// log.Printf("%s, %s SetAdditional %d, CaptureTimes (len %d): %+v\n",
 	// 	sn, tld.Name, tld.Additional, len(tld.CaptureTimes), tld.CaptureTimes)
 	return nil
+}
+
+// implement sort.Interface on CaptureTime
+func (ct CaptureTimes) Len() int {
+	return len(ct)
+}
+func (ct CaptureTimes) Less(i, j int) bool {
+	return ct[i].Before(ct[j])
+}
+func (ct CaptureTimes) Swap(i, j int) {
+	// sn := "CaptureTimes.Swap"
+	// log.Printf("%s, swapping %v and %v\n", sn, ct[i], ct[j])
+	ct[i], ct[j] = ct[j], ct[i]
 }
 
 // SplitTime adds N capture times between the provided times
@@ -618,17 +639,23 @@ func (tld *TLDef) SetLastCapture() error {
 }
 
 // UpdateNextCapture adjusts NextCapture to reference the element with the
-// next CaptureTime (first element with time > Now), or if none are left
+// next CaptureTime (first element with time > baseTime), or if none are left
 // (today's captures have all been performed), updates CaptureTimes with
 // tomorrow's capture times
-func (tld *TLDef) UpdateNextCapture() {
-	sn := "main.tld.UpdateNextCapture"
+func (tld *TLDef) UpdateNextCapture(baseTime time.Time) {
+	sn := "UpdateNextCapture"
 
-	// log.Printf("%s, %s NextCapture: %d, CaptureTimes (len %d): %v\n",
-	// 	sn, tld.Name, tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
+	// log.Printf("%s, %s NextCapture: baseTime %v, IsSorted %t, NextCapture %d, CaptureTimes (len %d): %v\n",
+	// 	sn, tld.Name, baseTime, sort.IsSorted(tld.CaptureTimes), tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
+
+	if !sort.IsSorted(tld.CaptureTimes) {
+		sort.Sort(tld.CaptureTimes)
+		// log.Printf("%s, %s IsSorted %t, CaptureTimes (len %d): %v\n",
+		// 	sn, tld.Name, sort.IsSorted(tld.CaptureTimes), len(tld.CaptureTimes), tld.CaptureTimes)
+	}
 
 	tld.NextCapture = 0
-	now := time.Now().In(srv.localLoc)
+	now := baseTime.In(srv.localLoc)
 	for _, t := range tld.CaptureTimes {
 		if t.After(now) {
 			break
@@ -638,7 +665,7 @@ func (tld *TLDef) UpdateNextCapture() {
 
 	msg := ""
 	if tld.NextCapture >= len(tld.CaptureTimes) {
-		tomorrow := time.Now().AddDate(0, 0, 1)
+		tomorrow := baseTime.AddDate(0, 0, 1)
 		tld.SetCaptureTimes(tomorrow) // setup tomorrow's capture times
 		tld.NextCapture = 0           // tomorrow's first time is next
 		msg = "CaptureTimes set for tomorrow;"
