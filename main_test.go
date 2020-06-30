@@ -329,14 +329,14 @@ func TestTLDef_SetCaptureTimes(t *testing.T) {
 	loc := time.Local
 
 	day1 := time.Date(2020, 5, 27, 0, 0, 0, 0, loc)
-	day1Capture := []time.Time{
+	day1Capture := CaptureTimes{
 		time.Date(2020, 5, 27, 5, 39, 41, 0, loc),  // Sunrise
 		time.Date(2020, 5, 27, 13, 3, 28, 0, loc),  // SolarNoon
 		time.Date(2020, 5, 27, 20, 27, 15, 0, loc), // Sunset
 	}
 
 	day2 := time.Date(2020, 5, 28, 0, 0, 0, 0, loc)
-	day2Capture := []time.Time{
+	day2Capture := CaptureTimes{
 		time.Date(2020, 5, 28, 5, 39, 9, 0, loc),  // Sunrise
 		time.Date(2020, 5, 28, 13, 3, 36, 0, loc), // SolarNoon
 		time.Date(2020, 5, 28, 20, 28, 2, 0, loc), // Sunset
@@ -347,7 +347,7 @@ func TestTLDef_SetCaptureTimes(t *testing.T) {
 		tld     *TLDef
 		day     time.Time
 		wantErr bool
-		want    []time.Time
+		want    CaptureTimes
 	}{
 		{name: "May27",
 			tld: &TLDef{
@@ -410,7 +410,7 @@ func TestTLDef_SetFirstCapture(t *testing.T) {
 		name    string
 		tld     TLDef
 		wantErr bool
-		want    []time.Time
+		want    CaptureTimes
 	}{
 		{name: "sunrise",
 			tld: TLDef{
@@ -422,7 +422,7 @@ func TestTLDef_SetFirstCapture(t *testing.T) {
 				SunriseUTC:     sunrise,
 			},
 			wantErr: false,
-			want:    []time.Time{sunrise},
+			want:    CaptureTimes{sunrise},
 		},
 		{name: "sunrise30",
 			tld: TLDef{
@@ -434,7 +434,7 @@ func TestTLDef_SetFirstCapture(t *testing.T) {
 				SunriseUTC:     sunrise,
 			},
 			wantErr: false,
-			want:    []time.Time{sunrise.Add(mins30)},
+			want:    CaptureTimes{sunrise.Add(mins30)},
 		},
 		{name: "sunrise60",
 			tld: TLDef{
@@ -446,7 +446,7 @@ func TestTLDef_SetFirstCapture(t *testing.T) {
 				SunriseUTC:     sunrise,
 			},
 			wantErr: false,
-			want:    []time.Time{sunrise.Add(mins60)},
+			want:    CaptureTimes{sunrise.Add(mins60)},
 		},
 		// {name: "first time",
 		// 	tld: TLDef{
@@ -454,7 +454,7 @@ func TestTLDef_SetFirstCapture(t *testing.T) {
 		// 		FirstSunrise: false,
 		// 	},
 		// 	wantErr: false,
-		// 	want:    []time.Time{firstTime},
+		// 	want:    CaptureTimes{firstTime},
 		// },
 		{name: "time and sunrise",
 			tld: TLDef{
@@ -520,7 +520,7 @@ func TestTLDef_SetAdditional(t *testing.T) {
 	tests := []struct {
 		name string
 		tld  TLDef
-		want []time.Time
+		want CaptureTimes
 	}{
 		{name: "add 0",
 			tld: TLDef{
@@ -534,9 +534,9 @@ func TestTLDef_SetAdditional(t *testing.T) {
 				LastFlags:    lastSunset,
 				SunriseUTC:   sunrise.In(time.UTC),
 				SunsetUTC:    sunset.In(time.UTC),
-				CaptureTimes: []time.Time{sunrise},
+				CaptureTimes: CaptureTimes{sunrise},
 			},
-			want: []time.Time{sunrise, sunset},
+			want: CaptureTimes{sunrise, sunset},
 		},
 		{name: "add 1", // always add solar noon when adding 1 capture
 			tld: TLDef{
@@ -551,9 +551,9 @@ func TestTLDef_SetAdditional(t *testing.T) {
 				SunriseUTC:   sunrise.In(time.UTC),
 				SolarNoonUTC: solarNoon.In(time.UTC),
 				SunsetUTC:    sunset.In(time.UTC),
-				CaptureTimes: []time.Time{sunrise},
+				CaptureTimes: CaptureTimes{sunrise},
 			},
-			want: []time.Time{sunrise, solarNoon, sunset},
+			want: CaptureTimes{sunrise, solarNoon, sunset},
 		},
 		{name: "add 2",
 			tld: TLDef{
@@ -567,9 +567,9 @@ func TestTLDef_SetAdditional(t *testing.T) {
 				LastFlags:    lastSunset,
 				SunriseUTC:   sunrise.In(time.UTC),
 				SunsetUTC:    sunset.In(time.UTC),
-				CaptureTimes: []time.Time{sunrise},
+				CaptureTimes: CaptureTimes{sunrise},
 			},
-			want: []time.Time{sunrise, addTwoTheFirst, addTwoTheSecond, sunset},
+			want: CaptureTimes{sunrise, addTwoTheFirst, addTwoTheSecond, sunset},
 		},
 		{name: "add 3",
 			tld: TLDef{
@@ -584,9 +584,9 @@ func TestTLDef_SetAdditional(t *testing.T) {
 				SunriseUTC:   sunrise.In(time.UTC),
 				SolarNoonUTC: solarNoon.In(time.UTC),
 				SunsetUTC:    sunset.In(time.UTC),
-				CaptureTimes: []time.Time{sunrise},
+				CaptureTimes: CaptureTimes{sunrise},
 			},
-			want: []time.Time{sunrise, addThreeTheFirst, addThreeTheSecond, addThreeTheThird, sunset},
+			want: CaptureTimes{sunrise, addThreeTheFirst, addThreeTheSecond, addThreeTheThird, sunset},
 		},
 		{name: "add 4",
 			tld: TLDef{
@@ -600,9 +600,9 @@ func TestTLDef_SetAdditional(t *testing.T) {
 				LastFlags:    lastSunset,
 				SunriseUTC:   sunrise.In(time.UTC),
 				SunsetUTC:    sunset.In(time.UTC),
-				CaptureTimes: []time.Time{sunrise},
+				CaptureTimes: CaptureTimes{sunrise},
 			},
-			want: []time.Time{sunrise, addFourTheFirst, addFourTheSecond, addFourTheThird, addFourTheFourth, sunset}, // the last capture time is set seprately
+			want: CaptureTimes{sunrise, addFourTheFirst, addFourTheSecond, addFourTheThird, addFourTheFourth, sunset}, // the last capture time is set seprately
 		},
 		{name: "add 5",
 			tld: TLDef{
@@ -617,9 +617,9 @@ func TestTLDef_SetAdditional(t *testing.T) {
 				SunriseUTC:   sunrise.In(time.UTC),
 				SolarNoonUTC: solarNoon.In(time.UTC),
 				SunsetUTC:    sunset.In(time.UTC),
-				CaptureTimes: []time.Time{sunrise},
+				CaptureTimes: CaptureTimes{sunrise},
 			},
-			want: []time.Time{sunrise, addFiveTheFirst, addFiveTheSecond, addFiveTheThird, addFiveTheFourth, addFiveTheFifth, sunset}, // the last capture time is set seprately
+			want: CaptureTimes{sunrise, addFiveTheFirst, addFiveTheSecond, addFiveTheThird, addFiveTheFourth, addFiveTheFifth, sunset}, // the last capture time is set seprately
 		},
 	}
 	for _, tt := range tests {
@@ -640,7 +640,7 @@ func TestTLDef_SetLastCapture(t *testing.T) {
 		name    string
 		tld     TLDef
 		wantErr bool
-		want    []time.Time
+		want    CaptureTimes
 	}{
 		{name: "sunset",
 			tld: TLDef{
@@ -652,7 +652,7 @@ func TestTLDef_SetLastCapture(t *testing.T) {
 				SunsetUTC:    sunset,
 			},
 			wantErr: false,
-			want:    []time.Time{sunset},
+			want:    CaptureTimes{sunset},
 		},
 		{name: "sunset30",
 			tld: TLDef{
@@ -664,7 +664,7 @@ func TestTLDef_SetLastCapture(t *testing.T) {
 				SunsetUTC:    sunset,
 			},
 			wantErr: false,
-			want:    []time.Time{sunset.Add(-mins30)},
+			want:    CaptureTimes{sunset.Add(-mins30)},
 		},
 		{name: "sunset60",
 			tld: TLDef{
@@ -676,7 +676,7 @@ func TestTLDef_SetLastCapture(t *testing.T) {
 				SunsetUTC:    sunset,
 			},
 			wantErr: false,
-			want:    []time.Time{sunset.Add(-mins60)},
+			want:    CaptureTimes{sunset.Add(-mins60)},
 		},
 		// {name: "last time",
 		// 	tld: TLDef{
@@ -688,7 +688,7 @@ func TestTLDef_SetLastCapture(t *testing.T) {
 		//		SunsetUTC:    sunset,
 		// 	},
 		// 	wantErr: false,
-		// 	want:    []time.Time{lastTime},
+		// 	want:    CaptureTimes{lastTime},
 		// },
 		{name: "time and sunset",
 			tld: TLDef{
@@ -734,19 +734,79 @@ func TestTLDef_SetLastCapture(t *testing.T) {
 }
 
 func TestTLDef_UpdateNextCapture(t *testing.T) {
-	t.Skip()
-	tests := []struct {
-		name string
-		tld  TLDef
-		want TLDef
-	}{
-		// TODO: Add test cases.
+	// layout := "Jan 2 2006 15:04:05 -0700 MST"
+	loc := time.Local
+
+	baseTLD := TLDef{
+		Name:         "Kohm Yah-man-yeh",
+		URL:          "https://www.nps.gov/webcams-lavo/kyvc_webcam1.jpg?1589316288166",
+		Latitude:     40.437787,
+		Longitude:    -121.5360307,
+		FirstTime:    false,
+		FirstSunrise: true,
+		LastTime:     false,
+		LastSunset:   true,
+		FirstFlags:   firstSunrise,
+		LastFlags:    lastSunset,
+		Additional:   1,
+		FolderPath:   "/Volumes/ExtFiles/OneDrive/Pictures/Timelapse/zzTest",
+		CaptureTimes: CaptureTimes{sunrise, solarNoon, sunset},
+		NextCapture:  0,
 	}
+	unsortedTLD := TLDef{
+		Name:         "Kohm Yah-man-yeh",
+		URL:          "https://www.nps.gov/webcams-lavo/kyvc_webcam1.jpg?1589316288166",
+		Latitude:     40.437787,
+		Longitude:    -121.5360307,
+		FirstTime:    false,
+		FirstSunrise: true,
+		LastTime:     false,
+		LastSunset:   true,
+		FirstFlags:   firstSunrise,
+		LastFlags:    lastSunset,
+		Additional:   3,
+		FolderPath:   "/Volumes/ExtFiles/OneDrive/Pictures/Timelapse/zzTest",
+		CaptureTimes: CaptureTimes{sunset, sunset.Add(-mins30), sunrise.Add(mins60), sunrise, solarNoon},
+		NextCapture:  0,
+	}
+	tests := []struct {
+		name    string
+		tld     *TLDef
+		refDate time.Time
+		want    int
+	}{
+		{name: "first",
+			tld:     &baseTLD,
+			refDate: time.Date(2020, 5, 27, 0, 0, 0, 0, loc),
+			want:    0,
+		},
+		{name: "middle",
+			tld:     &baseTLD,
+			refDate: sunrise.Add(mins30),
+			want:    1,
+		},
+		{name: "last",
+			tld:     &baseTLD,
+			refDate: sunset.Add(-mins60),
+			want:    2,
+		},
+		{name: "unsorted",
+			tld:     &unsortedTLD,
+			refDate: time.Date(2020, 5, 27, 12, 0, 1, 0, loc),
+			want:    2,
+		},
+		{name: "new day",
+			tld:     &baseTLD,
+			refDate: sunset.Add(mins30),
+			want:    0,
+		},
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tt.tld.UpdateNextCapture()
-			if !reflect.DeepEqual(tt.tld, tt.want) {
-				t.Errorf("TLDef.UpdateNextCapture() got %v, want %v", tt.tld, tt.want)
+			tt.tld.UpdateNextCapture(tt.refDate)
+			if tt.tld.NextCapture != tt.want {
+				t.Errorf("UpdateNextCapture() got %d, want %d", tt.tld.NextCapture, tt.want)
 			}
 		})
 	}
