@@ -14,6 +14,23 @@ import (
 	"time"
 )
 
+var baseTLD = TLDef{
+	Name:         "Kohm Yah-man-yeh",
+	URL:          "https://www.nps.gov/webcams-lavo/kyvc_webcam1.jpg?1589316288166",
+	Latitude:     40.437787,
+	Longitude:    -121.5360307,
+	FirstTime:    false,
+	FirstSunrise: true,
+	LastTime:     false,
+	LastSunset:   true,
+	FirstFlags:   firstSunrise,
+	LastFlags:    lastSunset,
+	Additional:   1,
+	FolderPath:   "/Volumes/ExtFiles/OneDrive/Pictures/Timelapse/zzTest",
+	CaptureTimes: CaptureTimes{sunrise, solarNoon, sunset},
+	NextCapture:  0,
+}
+
 var loc = time.Local
 var sunrise = time.Date(2020, 5, 27, 5, 39, 41, 0, loc)   // Sunrise
 var solarNoon = time.Date(2020, 5, 27, 13, 3, 28, 0, loc) // SolarNoon
@@ -51,6 +68,8 @@ func TestMain(m *testing.M) {
 	// go startFramework(port) // call ListenAndServe from a separate go routine so main can listen for signals
 
 	exitcode := m.Run()
+
+	// TODO: cleanup timelapse.json - delete name = "test1"
 	os.Exit(exitcode)
 }
 
@@ -107,7 +126,7 @@ func Test_server_handleNew(t *testing.T) {
 	}{
 		{name: "min valid",
 			params: map[string]string{
-				"name":         "test1-kona",
+				"name":         "test1",
 				"webcamUrl":    "https://www.konaweb.com/cam/guardian/22.jpg",
 				"latitude":     "19.6401882",
 				"longitude":    "-155.9957959",
@@ -121,7 +140,7 @@ func Test_server_handleNew(t *testing.T) {
 		},
 		{name: "missing name",
 			params: map[string]string{
-				// "name":         "test1-kona",
+				// "name":         "test1",
 				"webcamUrl":    "https://www.konaweb.com/cam/guardian/22.jpg",
 				"latitude":     "19.6401882",
 				"longitude":    "-155.9957959",
@@ -135,7 +154,7 @@ func Test_server_handleNew(t *testing.T) {
 		},
 		{name: "missing webcamUrl",
 			params: map[string]string{
-				"name": "test1-kona",
+				"name": "test1",
 				// "webcamUrl":    "https://www.konaweb.com/cam/guardian/22.jpg",
 				"latitude":     "19.6401882",
 				"longitude":    "-155.9957959",
@@ -149,7 +168,7 @@ func Test_server_handleNew(t *testing.T) {
 		},
 		{name: "missing lat",
 			params: map[string]string{
-				"name":      "test1-kona",
+				"name":      "test1",
 				"webcamUrl": "https://www.konaweb.com/cam/guardian/22.jpg",
 				// "latitude":     "19.6401882",
 				"longitude":    "-155.9957959",
@@ -163,7 +182,7 @@ func Test_server_handleNew(t *testing.T) {
 		},
 		{name: "missing long",
 			params: map[string]string{
-				"name":      "test1-kona",
+				"name":      "test1",
 				"webcamUrl": "https://www.konaweb.com/cam/guardian/22.jpg",
 				"latitude":  "19.6401882",
 				// "longitude":    "-155.9957959",
@@ -177,7 +196,7 @@ func Test_server_handleNew(t *testing.T) {
 		},
 		{name: "missing additional",
 			params: map[string]string{
-				"name":         "test1-kona",
+				"name":         "test1",
 				"webcamUrl":    "https://www.konaweb.com/cam/guardian/22.jpg",
 				"latitude":     "19.6401882",
 				"longitude":    "-155.9957959",
@@ -191,7 +210,7 @@ func Test_server_handleNew(t *testing.T) {
 		},
 		{name: "additional too small",
 			params: map[string]string{
-				"name":         "test1-kona",
+				"name":         "test1",
 				"webcamUrl":    "https://www.konaweb.com/cam/guardian/22.jpg",
 				"latitude":     "19.6401882",
 				"longitude":    "-155.9957959",
@@ -205,7 +224,7 @@ func Test_server_handleNew(t *testing.T) {
 		},
 		{name: "additional too big",
 			params: map[string]string{
-				"name":         "test1-kona",
+				"name":         "test1",
 				"webcamUrl":    "https://www.konaweb.com/cam/guardian/22.jpg",
 				"latitude":     "19.6401882",
 				"longitude":    "-155.9957959",
@@ -219,7 +238,7 @@ func Test_server_handleNew(t *testing.T) {
 		},
 		{name: "missing folder",
 			params: map[string]string{
-				"name":         "test1-kona",
+				"name":         "test1",
 				"webcamUrl":    "https://www.konaweb.com/cam/guardian/22.jpg",
 				"latitude":     "19.6401882",
 				"longitude":    "-155.9957959",
@@ -229,6 +248,34 @@ func Test_server_handleNew(t *testing.T) {
 				// "folder":       "/Volumes/ExtFiles/OneDrive/Pictures/Timelapse/zzTest",
 			},
 			wantStatus: http.StatusBadRequest,
+			substring:  []byte(""),
+		},
+		{name: "sunrise30, sunset30",
+			params: map[string]string{
+				"name":           "test1",
+				"webcamUrl":      "https://www.konaweb.com/cam/guardian/22.jpg",
+				"latitude":       "19.6401882",
+				"longitude":      "-155.9957959",
+				"firstSunrise30": "",
+				"lastSunset30":   "",
+				"additional":     "0",
+				"folder":         "/Volumes/ExtFiles/OneDrive/Pictures/Timelapse/zzTest",
+			},
+			wantStatus: http.StatusSeeOther,
+			substring:  []byte(""),
+		},
+		{name: "sunrise60, sunset60",
+			params: map[string]string{
+				"name":           "test1",
+				"webcamUrl":      "https://www.konaweb.com/cam/guardian/22.jpg",
+				"latitude":       "19.6401882",
+				"longitude":      "-155.9957959",
+				"firstSunrise60": "",
+				"lastSunset60":   "",
+				"additional":     "0",
+				"folder":         "/Volumes/ExtFiles/OneDrive/Pictures/Timelapse/zzTest",
+			},
+			wantStatus: http.StatusSeeOther,
 			substring:  []byte(""),
 		},
 	}
@@ -498,6 +545,75 @@ func TestTLDef_SetFirstCapture(t *testing.T) {
 	}
 }
 
+func TestTLDef_SetFirstLastFlags(t *testing.T) {
+	baseTLD.FirstTime = false
+	baseTLD.FirstSunrise = true
+	baseTLD.FirstSunrise30 = false
+	baseTLD.FirstSunrise60 = false
+	baseTLD.LastTime = false
+	baseTLD.LastSunset = true
+	baseTLD.LastSunset30 = false
+	baseTLD.LastSunset60 = false
+	baseTLD.FirstFlags = 0
+	baseTLD.LastFlags = 0
+
+	firstLast30 := baseTLD
+	firstLast30.FirstSunrise = false
+	firstLast30.FirstSunrise30 = true
+	firstLast30.FirstSunrise60 = false
+	firstLast30.LastTime = false
+	firstLast30.LastSunset = false
+	firstLast30.LastSunset30 = true
+	firstLast30.LastSunset60 = false
+	firstLast30.FirstFlags = 0
+	firstLast30.LastFlags = 0
+
+	firstLast60 := baseTLD
+	firstLast60.FirstSunrise = false
+	firstLast60.FirstSunrise30 = false
+	firstLast60.FirstSunrise60 = true
+	firstLast60.LastTime = false
+	firstLast60.LastSunset = false
+	firstLast60.LastSunset30 = false
+	firstLast60.LastSunset60 = true
+	firstLast60.FirstFlags = 0
+	firstLast60.LastFlags = 0
+
+	tests := []struct {
+		name      string
+		tld       *TLDef
+		wantFirst uint
+		wantLast  uint
+	}{
+		{name: "sunrise sunset",
+			tld:       &baseTLD,
+			wantFirst: firstSunrise,
+			wantLast:  lastSunset,
+		},
+		{name: "sunrise30 sunset30",
+			tld:       &firstLast30,
+			wantFirst: firstSunrise30,
+			wantLast:  lastSunset30,
+		},
+		{name: "sunrise60 sunset60",
+			tld:       &firstLast60,
+			wantFirst: firstSunrise60,
+			wantLast:  lastSunset60,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.tld.SetFirstLastFlags()
+			if tt.tld.FirstFlags != tt.wantFirst {
+				t.Errorf("TLDef.SetFirstLastFlags() got FirstFlags %v, want %v", tt.tld.FirstFlags, tt.wantFirst)
+			}
+			if tt.tld.LastFlags != tt.wantLast {
+				t.Errorf("TLDef.SetFirstLastFlags() got LastFlags %v, want %v", tt.tld.LastFlags, tt.wantLast)
+			}
+		})
+	}
+}
+
 func TestTLDef_SetAdditional(t *testing.T) {
 	addTwoTheFirst := time.Date(2020, 5, 27, 10, 35, 32, 0, loc)
 	addTwoTheSecond := time.Date(2020, 5, 27, 15, 31, 23, 0, loc)
@@ -737,22 +853,6 @@ func TestTLDef_UpdateNextCapture(t *testing.T) {
 	// layout := "Jan 2 2006 15:04:05 -0700 MST"
 	loc := time.Local
 
-	baseTLD := TLDef{
-		Name:         "Kohm Yah-man-yeh",
-		URL:          "https://www.nps.gov/webcams-lavo/kyvc_webcam1.jpg?1589316288166",
-		Latitude:     40.437787,
-		Longitude:    -121.5360307,
-		FirstTime:    false,
-		FirstSunrise: true,
-		LastTime:     false,
-		LastSunset:   true,
-		FirstFlags:   firstSunrise,
-		LastFlags:    lastSunset,
-		Additional:   1,
-		FolderPath:   "/Volumes/ExtFiles/OneDrive/Pictures/Timelapse/zzTest",
-		CaptureTimes: CaptureTimes{sunrise, solarNoon, sunset},
-		NextCapture:  0,
-	}
 	unsortedTLD := TLDef{
 		Name:         "Kohm Yah-man-yeh",
 		URL:          "https://www.nps.gov/webcams-lavo/kyvc_webcam1.jpg?1589316288166",

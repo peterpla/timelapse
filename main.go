@@ -70,35 +70,11 @@ func main() {
 	// use context and cancel with goroutines to handle Ctrl+C
 	ctx, cancel := context.WithCancel(context.Background())
 
-	var wg sync.WaitGroup
 	for _, tld := range *(srv.mtld) {
 		// log.Printf("%s, launching goroutine #%d (%s), FirstFlags %b, LastFlags %b",
 		// 	sn, i, tld.Name, tld.FirstFlags, tld.LastFlags)
-		wg.Add(1)
-		go func(ctx context.Context, tld *TLDef, pollInterval int) {
-			tld.SetCaptureTimes(time.Now()) // calculate all capture times for today
-			tld.UpdateNextCapture(time.Now())
-
-			log.Printf("goroutine handling %s (%p), timezone %s, CaptureTimes (len %d): %v, FirstFlags %b, LastFlags %b\n",
-				tld.Name, tld, tld.WebcamTZ, len(tld.CaptureTimes), tld.CaptureTimes, tld.FirstFlags, tld.LastFlags)
-
-			for {
-				select {
-				case <-ctx.Done():
-					log.Printf("goroutine handling TLDef %s exiting after ctx.Done\n", tld.Name)
-					wg.Done()
-					return
-				default:
-					if tld.IsTimeForCapture() {
-						// capture and store the image
-						log.Printf("********** %s image captured (not really)\n", tld.Name)
-						tld.UpdateNextCapture(time.Now())
-					}
-				}
-				// log.Printf("TLDef %s sleeping for %d seconds...\n", tld.Name, pollInterval)
-				time.Sleep(time.Duration(pollInterval) * time.Second)
-			}
-		}(ctx, tld, srv.config.pollSecs)
+		srv.wg.Add(1)
+		go capture(ctx, tld, srv.config.pollSecs)
 		time.Sleep(1 * time.Second) // respect TimeZoneDB.com limit 1 request/second
 	}
 
@@ -121,11 +97,36 @@ func main() {
 	defer func() { // on handled signals, cancel goroutines, wait and exit
 		signal.Stop(c)
 		cancel()
-		wg.Wait()
+		srv.wg.Wait()
 	}()
 
 	s := <-c
 	log.Printf("\n%s received signal %s, terminating", sn, s.String())
+}
+
+func capture(ctx context.Context, tld *TLDef, pollInterval int) {
+	tld.SetCaptureTimes(time.Now()) // calculate all capture times for today
+	tld.UpdateNextCapture(time.Now())
+
+	log.Printf("goroutine handling %s (%p), timezone %s, CaptureTimes (len %d): %v, FirstFlags %b, LastFlags %b\n",
+		tld.Name, tld, tld.WebcamTZ, len(tld.CaptureTimes), tld.CaptureTimes, tld.FirstFlags, tld.LastFlags)
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("goroutine handling TLDef %s exiting after ctx.Done\n", tld.Name)
+			srv.wg.Done()
+			return
+		default:
+			if tld.IsTimeForCapture() {
+				// capture and store the image
+				log.Printf("********** %s image captured (not really)\n", tld.Name)
+				tld.UpdateNextCapture(time.Now())
+			}
+		}
+		// log.Printf("TLDef %s sleeping for %d seconds...\n", tld.Name, pollInterval)
+		time.Sleep(time.Duration(pollInterval) * time.Second)
+	}
 }
 
 // startListening invokes ListenAndServe
@@ -154,6 +155,7 @@ type server struct {
 	tmpl     *template.Template
 	localLoc *time.Location // timezone where this code is running
 	mtld     *masterTLDefs  // timelapse definitions, read from/written to timelapse.json
+	wg       sync.WaitGroup
 }
 
 // newServer creates a new instance of server with router and validation
@@ -277,6 +279,12 @@ func (s *server) handleNew() httprouter.Handle {
 		if _, ok := r.Form["lastSunset"]; ok {
 			tld.LastSunset = true
 		}
+		if _, ok := r.Form["lastSunset30"]; ok {
+			tld.LastSunset30 = true
+		}
+		if _, ok := r.Form["lastSunset60"]; ok {
+			tld.LastSunset60 = true
+		}
 
 		if err := tld.SetFirstLastFlags(); err != nil {
 			log.Printf("%s, SetFirstLastFlags: %v\n", sn, err)
@@ -394,7 +402,7 @@ type TLDef struct {
 	LastSunset30   bool           `json:"lastSunset30" formam:"lastSunset30"`                         // ................ Sunrise +30 minutes
 	LastSunset60   bool           `json:"lastSunset60" formam:"lastSunset60"`                         // ................ Sunrise +60 minutes
 	Additional     int            `json:"additional" formam:"additional"`                             // Additional captures per day (in addition to First and Last)
-	FolderPath     string         `json:"folder" formam:"folder" validate:"dir,required"`             // Folder path to store captures
+	FolderPath     string         `json:"folder" formam:"folder" validate:"required"`                 // Folder path to store captures
 	FirstFlags     uint           `json:"-"`                                                          // bit set for First booleans
 	LastFlags      uint           `json:"-"`                                                          // bit set for Last booleans
 	WebcamTZ       string         `json:"-"`                                                          // timezone of the webcam (e.g., "America/Los_Angeles")
@@ -508,7 +516,7 @@ func (tld *TLDef) SetFirstLastFlags() error {
 		// log.Printf("%s, %s: FirstSunrise60 found, FirstFlags %b\n", sn, tld.Name, tld.FirstFlags)
 	}
 	if bits.OnesCount(tld.FirstFlags) == 0 || bits.OnesCount(tld.FirstFlags) > 1 {
-		// return fmt.Errorf("%s, must specify one of Sunrise, Sunrise +30, or Sunrise +60; or First Time", sn)
+		return fmt.Errorf("%s, must specify one of Sunrise, Sunrise +30, or Sunrise +60; or First Time", sn)
 	}
 
 	tld.LastFlags = 0
@@ -529,7 +537,7 @@ func (tld *TLDef) SetFirstLastFlags() error {
 		// log.Printf("%s, %s: LastSunset60 found, LastFlags %b\n", sn, tld.Name, tld.LastFlags)
 	}
 	if bits.OnesCount(tld.LastFlags) == 0 || bits.OnesCount(tld.LastFlags) > 1 {
-		return fmt.Errorf("%s, must specify one of Sunset or Last Time", sn)
+		return fmt.Errorf("%s, must specify one of Sunset, Sunset -30, or Sunset -60; or Last Time", sn)
 	}
 
 	// log.Printf("%s, exit SetFirstLastFlags for TLDef (%p), tld.FirstFlags %b, tld.LastFlags %b\n",
