@@ -14,21 +14,23 @@ import (
 	"time"
 )
 
-var baseTLD = TLDef{
-	Name:         "Kohm Yah-man-yeh",
-	URL:          "https://www.nps.gov/webcams-lavo/kyvc_webcam1.jpg?1589316288166",
-	Latitude:     40.437787,
-	Longitude:    -121.5360307,
-	FirstTime:    false,
-	FirstSunrise: true,
-	LastTime:     false,
-	LastSunset:   true,
-	FirstFlags:   firstSunrise,
-	LastFlags:    lastSunset,
-	Additional:   1,
-	FolderPath:   "/Volumes/ExtFiles/OneDrive/Pictures/Timelapse/zzTest",
-	CaptureTimes: CaptureTimes{sunrise, solarNoon, sunset},
-	NextCapture:  0,
+func newBaseTLD() TLDef {
+	return TLDef{
+		Name:         "Kohm Yah-man-yeh",
+		URL:          "https://www.nps.gov/webcams-lavo/kyvc_webcam1.jpg?1589316288166",
+		Latitude:     40.437787,
+		Longitude:    -121.5360307,
+		FirstTime:    false,
+		FirstSunrise: true,
+		LastTime:     false,
+		LastSunset:   true,
+		FirstFlags:   firstSunrise,
+		LastFlags:    lastSunset,
+		Additional:   1,
+		FolderPath:   "/Volumes/ExtFiles/OneDrive/Pictures/Timelapse/zzTest",
+		CaptureTimes: CaptureTimes{sunrise, solarNoon, sunset},
+		NextCapture:  0,
+	}
 }
 
 var loc = time.Local
@@ -66,6 +68,12 @@ func TestMain(m *testing.M) {
 	mins60, _ = time.ParseDuration("60m")
 
 	// go startFramework(port) // call ListenAndServe from a separate go routine so main can listen for signals
+	// startFramework starts funcframework which calls ListenAndServe
+	// func startFramework(port string) {
+	// 	if err := funcframework.Start(port); err != nil {
+	// 		log.Fatalf("funcframework.Start: %v\n", err)
+	// 	}
+	// }
 
 	exitcode := m.Run()
 
@@ -73,12 +81,72 @@ func TestMain(m *testing.M) {
 	os.Exit(exitcode)
 }
 
-// startFramework starts funcframework which calls ListenAndServe
-// func startFramework(port string) {
-// 	if err := funcframework.Start(port); err != nil {
-// 		log.Fatalf("funcframework.Start: %v\n", err)
-// 	}
-// }
+func TestTLDef_CaptureImage(t *testing.T) {
+	t.Skip()
+	// tests := []struct {
+	// 	name string
+	// 	tld  TLDef
+	// 	want time.Time
+	// }{
+	// 	// TODO: Add test cases.
+	// }
+	// for _, tt := range tests {
+	// 	t.Run(tt.name, func(t *testing.T) {
+	// 		if got := tt.tld.CaptureImage(); got != tt.want {
+	// 			t.Errorf("TLDef.CaptureImage() got %v, want %v", got, tt.want)
+	// 		}
+	// 	})
+	// }
+}
+
+func TestTLDef_TargetFileName(t *testing.T) {
+	baseTLD := newBaseTLD()
+
+	otherTLD := newBaseTLD()
+	otherTLD.CaptureTimes = CaptureTimes{solarNoon, sunset}
+	otherTLD.NextCapture = 1
+
+	tests := []struct {
+		name string
+		tld  *TLDef
+		want string
+	}{
+		{name: "sunrise",
+			tld:  &baseTLD,
+			want: baseTLD.FolderPath + "/" + baseTLD.Name + " " + "20200527053941",
+		},
+		{name: "sunset",
+			tld:  &otherTLD,
+			want: otherTLD.FolderPath + "/" + otherTLD.Name + " " + "20200527202715",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.tld.TargetFileName(); got != tt.want {
+				t.Errorf("TLDef.TargetFileName() got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTLDef_RetrieveImage(t *testing.T) {
+	t.Skip()
+	// tests := []struct {
+	// 	name string
+	// 	tld  TLDef
+	// 	want time.Time
+	// }{
+	// 	// TODO: Add test cases.
+	// }
+	// for _, tt := range tests {
+	// 	t.Run(tt.name, func(t *testing.T) {
+	// 		respBody, err := tt.tld.RetrieveImage()
+	// 		if got != tt.want {
+	// 			t.Errorf("TLDef.RetrieveImage() got %v, want %v", got, tt.want)
+	// 		}
+	// 	})
+	// }
+}
 
 func Test_server_handleHome(t *testing.T) {
 	tests := []struct {
@@ -546,6 +614,7 @@ func TestTLDef_SetFirstCapture(t *testing.T) {
 }
 
 func TestTLDef_SetFirstLastFlags(t *testing.T) {
+	baseTLD := newBaseTLD()
 	baseTLD.FirstTime = false
 	baseTLD.FirstSunrise = true
 	baseTLD.FirstSunrise30 = false
@@ -557,7 +626,7 @@ func TestTLDef_SetFirstLastFlags(t *testing.T) {
 	baseTLD.FirstFlags = 0
 	baseTLD.LastFlags = 0
 
-	firstLast30 := baseTLD
+	firstLast30 := newBaseTLD()
 	firstLast30.FirstSunrise = false
 	firstLast30.FirstSunrise30 = true
 	firstLast30.FirstSunrise60 = false
@@ -568,7 +637,7 @@ func TestTLDef_SetFirstLastFlags(t *testing.T) {
 	firstLast30.FirstFlags = 0
 	firstLast30.LastFlags = 0
 
-	firstLast60 := baseTLD
+	firstLast60 := newBaseTLD()
 	firstLast60.FirstSunrise = false
 	firstLast60.FirstSunrise30 = false
 	firstLast60.FirstSunrise60 = true
@@ -852,6 +921,7 @@ func TestTLDef_SetLastCapture(t *testing.T) {
 func TestTLDef_UpdateNextCapture(t *testing.T) {
 	// layout := "Jan 2 2006 15:04:05 -0700 MST"
 	loc := time.Local
+	baseTLD := newBaseTLD()
 
 	unsortedTLD := TLDef{
 		Name:         "Kohm Yah-man-yeh",
