@@ -891,10 +891,19 @@ func (mtld *masterTLDefs) Append(newTLD *TLDef) error {
 	return nil
 }
 
-// Delete deletes a timelapse definition from the masterTLDefs slice
-func (mtld *masterTLDefs) Delete(tldName string) error {
-	// TODO: #27 implement masterTLDefs.Delete
-	return nil
+// Delete timelapse definition(s) with Name matching prefix from
+// the masterTLDefs slice. Primarily used to cleanup after testing.
+func (mtld *masterTLDefs) Delete(prefix string) *masterTLDefs {
+	sn := "masterTLDefs.Delete"
+
+	var newMTLD masterTLDefs
+	for _, ptld := range *mtld {
+		if !strings.HasPrefix(ptld.Name, prefix) {
+			log.Printf("%s, retain %s\n", sn, (*ptld).Name)
+			newMTLD = append(newMTLD, ptld)
+		}
+	}
+	return &newMTLD
 }
 
 // ********** ********** ********** ********** ********** **********

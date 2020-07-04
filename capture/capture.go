@@ -17,8 +17,8 @@ import (
 
 var validate *validator.Validate // use a single instance of Validate, it caches struct info
 
-// TODO: Error Reporting Client to publish errors to StackDriver Error Reporting https://cloud.google.com/error-reporting/docs/reference/libraries#client-libraries-usage-go
-// TODO: init global variables which *may* survive if execution environment is recycled
+// TODO: if Cloud Function, add Error Reporting Client to publish errors to StackDriver Error Reporting https://cloud.google.com/error-reporting/docs/reference/libraries#client-libraries-usage-go
+// TODO: if Cloud Function, init global variables which *may* survive if execution environment is recycled
 
 // WebcamImage is an Google Cloud Function that retrieves a webcam image
 // from the specified URL.
