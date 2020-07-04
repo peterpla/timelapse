@@ -142,11 +142,18 @@ func capture(ctx context.Context, tld *TLDef, pollInterval int) {
 			return
 		default:
 			if tld.IsTimeForCapture() {
+				if tld.Backoff > 0 {
+					log.Printf("%s, backing off %d seconds\n", sn, tld.Backoff)
+					time.Sleep(time.Second * time.Duration(tld.Backoff))
+				}
+
 				createdName, createdSize, err := tld.CaptureImage()
 				if err != nil {
 					log.Printf("%s, CaptureImage: %v\n", sn, err)
+					tld.AdjustBackoff()
 					break
 				}
+				tld.Backoff = 0 // after successful capture, no backoff
 				log.Printf("%s, %s created, size %s", sn, createdName, datasize.ByteSize(createdSize).HumanReadable())
 
 				tld.UpdateNextCapture(time.Now())
@@ -157,20 +164,30 @@ func capture(ctx context.Context, tld *TLDef, pollInterval int) {
 	}
 }
 
+// AdjustBackoff implements our backoff policy when cannot retrieve a webcam image
+func (tld *TLDef) AdjustBackoff() {
+	const maxBackoff = time.Minute * 10
+
+	tld.Backoff = tld.Backoff * 2 // keep increasing the backoff time until no error
+	if time.Duration(tld.Backoff) > maxBackoff {
+		tld.Backoff = int64(maxBackoff)
+	}
+}
+
 // CaptureImage retrieves the webcam image and saves it in the specified
 // folder
 func (tld *TLDef) CaptureImage() (string, int64, error) {
-	sn := fmt.Sprintf("CaptureImage.%q", tld.Name)
+	// sn := fmt.Sprintf("CaptureImage.%q", tld.Name)
 
 	newFile, err := os.Create(tld.TargetFileName())
 	if err != nil {
-		log.Printf("%s os.Create: %v\n", sn, err)
+		// log.Printf("%s os.Create: %v\n", sn, err)
 		return "", 0, err
 	}
 
 	respBody, err := tld.RetrieveImage()
 	if err != nil {
-		log.Printf("%s RetrieveImage: %v\n", sn, err)
+		// log.Printf("%s RetrieveImage: %v\n", sn, err)
 		return "", 0, err
 	}
 	defer respBody.Close()
@@ -178,7 +195,7 @@ func (tld *TLDef) CaptureImage() (string, int64, error) {
 	written, err := io.Copy(newFile, respBody) // io.Copy buffers I/O to support huge files
 	defer newFile.Close()
 	if err != nil {
-		log.Printf("%s io.Copy: %v\n", sn, err)
+		// log.Printf("%s io.Copy: %v\n", sn, err)
 		return "", 0, err
 	}
 
@@ -198,11 +215,11 @@ func (tld *TLDef) TargetFileName() string {
 // RetrieveImage retrieves the webcam image and returns resp.Body, for
 // reading and closing by the caller
 func (tld *TLDef) RetrieveImage() (io.ReadCloser, error) {
-	sn := fmt.Sprintf("RetrieveImage.%q", tld.Name)
+	// sn := fmt.Sprintf("RetrieveImage.%q", tld.Name)
 
 	webcamReq, err := http.NewRequest("GET", tld.URL, nil)
 	if err != nil {
-		log.Printf("%s http.NewRequest: %v\n", sn, err)
+		// log.Printf("%s http.NewRequest: %v\n", sn, err)
 		return nil, err
 	}
 
@@ -210,7 +227,7 @@ func (tld *TLDef) RetrieveImage() (io.ReadCloser, error) {
 
 	resp, err := client.Do(webcamReq)
 	if err != nil {
-		log.Printf("%s client.Do: %v\n", sn, err)
+		// log.Printf("%s client.Do: %v\n", sn, err)
 		return nil, err
 	}
 
@@ -470,8 +487,8 @@ type TLDef struct {
 	FirstSunrise60 bool           `json:"firstSunrise60" formam:"firstSunrise60"`                     // ................ Sunrise +60 minutes
 	LastTime       bool           `json:"lastTime" formam:"lastTime"`                                 // Last capture at specific time
 	LastSunset     bool           `json:"lastSunset" formam:"lastSunset"`                             // Last capture at Sunset
-	LastSunset30   bool           `json:"lastSunset30" formam:"lastSunset30"`                         // ................ Sunrise +30 minutes
-	LastSunset60   bool           `json:"lastSunset60" formam:"lastSunset60"`                         // ................ Sunrise +60 minutes
+	LastSunset30   bool           `json:"lastSunset30" formam:"lastSunset30"`                         // ................ Sunset -30 minutes
+	LastSunset60   bool           `json:"lastSunset60" formam:"lastSunset60"`                         // ................ Sunset -60 minutes
 	Additional     int            `json:"additional" formam:"additional"`                             // Additional captures per day (in addition to First and Last)
 	FolderPath     string         `json:"folder" formam:"folder" validate:"required"`                 // Folder path to store captures
 	FirstFlags     uint           `json:"-"`                                                          // bit set for First booleans
@@ -483,6 +500,7 @@ type TLDef struct {
 	SunsetUTC      time.Time      `json:"-"`                                                          // sunset at webcam lat/long (UTC)
 	CaptureTimes   CaptureTimes   `json:"-"`                                                          // Times (in time zone where the code is running) to capture images
 	NextCapture    int            `json:"-"`                                                          // index in CaptureTimes[] of next (future) capture time
+	Backoff        int64          `json:"-"`                                                          // delay image retrieval attempts when errors encountered
 }
 
 // newTLDef initializes a TLDef structure
@@ -722,7 +740,7 @@ func (tld *TLDef) SetLastCapture() error {
 // (today's captures have all been performed), updates CaptureTimes with
 // tomorrow's capture times
 func (tld *TLDef) UpdateNextCapture(baseTime time.Time) {
-	sn := "UpdateNextCapture"
+	// sn := "UpdateNextCapture"
 
 	// log.Printf("%s, %s NextCapture: baseTime %v, IsSorted %t, NextCapture %d, CaptureTimes (len %d): %v\n",
 	// 	sn, tld.Name, baseTime, sort.IsSorted(tld.CaptureTimes), tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
@@ -742,20 +760,20 @@ func (tld *TLDef) UpdateNextCapture(baseTime time.Time) {
 		tld.NextCapture++
 	}
 
-	msg := ""
+	// msg := ""
 	if tld.NextCapture >= len(tld.CaptureTimes) {
 		tomorrow := baseTime.AddDate(0, 0, 1)
 		tld.SetCaptureTimes(tomorrow) // setup tomorrow's capture times
 		tld.NextCapture = 0           // tomorrow's first time is next
-		msg = "CaptureTimes set for tomorrow;"
+		// msg = "CaptureTimes set for tomorrow;"
 	}
 
 	// log.Printf("%s, %s %s NextCapture: %d, CaptureTimes (len %d): %v\n",
 	// 	sn, tld.Name, msg, tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
-	if msg != "" {
-		log.Printf("%s, %s %s NextCapture: %d, CaptureTimes (len %d): %v\n",
-			sn, tld.Name, msg, tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
-	}
+	// if msg != "" {
+	// 	log.Printf("%s, %s %s NextCapture: %d, CaptureTimes (len %d): %v\n",
+	// 		sn, tld.Name, msg, tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
+	// }
 }
 
 // NextCaptureTime returns the time of the next capture
