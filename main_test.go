@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -77,7 +78,12 @@ func TestMain(m *testing.M) {
 
 	exitcode := m.Run()
 
-	// TODO: cleanup timelapse.json - delete name = "test1"
+	newMTLD := srv.mtld.Delete("test")
+	srv.mtld = newMTLD
+
+	if err := srv.mtld.Write(); err != nil {
+		log.Printf("%s, %v", sn, err)
+	}
 	os.Exit(exitcode)
 }
 
@@ -1155,6 +1161,67 @@ func Test_masterTLDefs_Append(t *testing.T) {
 				t.Errorf("%s, got %+v, want %+v", tt.name, got, want)
 			}
 		}
+	}
+}
+
+func Test_masterTLDefs_Delete(t *testing.T) {
+	firstMTLD := []*TLDef{
+		{Name: "testMatch"},
+		{Name: "noMatch1"},
+		{Name: "noMatch2"},
+	}
+	middleMTLD := []*TLDef{
+		{Name: "noMatch1"},
+		{Name: "testMatch"},
+		{Name: "noMatch2"},
+	}
+	lastMTLD := []*TLDef{
+		{Name: "noMatch1"},
+		{Name: "noMatch2"},
+		{Name: "testMatch"},
+	}
+	resultMTLD := []*TLDef{
+		{Name: "noMatch1"},
+		{Name: "noMatch2"},
+	}
+
+	tests := []struct {
+		name   string
+		prefix string
+		mtld   masterTLDefs
+		want   masterTLDefs
+	}{
+		{name: "first",
+			prefix: "test",
+			mtld:   firstMTLD,
+			want:   resultMTLD,
+		},
+		{name: "middle",
+			prefix: "test",
+			mtld:   middleMTLD,
+			want:   resultMTLD,
+		},
+		{name: "last",
+			prefix: "test",
+			mtld:   lastMTLD,
+			want:   resultMTLD,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var newMTLD *masterTLDefs
+
+			newMTLD = tt.mtld.Delete(tt.prefix)
+			if len(*newMTLD) != len(tt.want) {
+				t.Errorf("%s len(newMTLD) = %d, want %d [i.e., len(want)]", tt.name, len(*newMTLD), len(tt.want))
+			}
+			for i, tld := range *newMTLD {
+				if tld.Name != tt.want[i].Name {
+					t.Errorf("%s mtld element %d, got %+v, want %+v", tt.name, i, tld.Name, tt.want[i].Name)
+				}
+			}
+		})
 	}
 }
 
