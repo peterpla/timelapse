@@ -70,13 +70,14 @@ func main() {
 	runtime.GOMAXPROCS(2)
 
 	// use context and cancel with goroutines to handle Ctrl+C
-	ctx, cancel := context.WithCancel(context.Background())
+	// TODO: add ctx to server struct, so availble when adding a new webcam and launching new go routine
+	srv.ctx, srv.cancel = context.WithCancel(context.Background())
 
 	for _, tld := range *(srv.mtld) {
 		// log.Printf("%s, launching goroutine #%d (%s), FirstFlags %b, LastFlags %b",
 		// 	sn, i, tld.Name, tld.FirstFlags, tld.LastFlags)
 		srv.wg.Add(1)
-		go capture(ctx, tld, srv.config.pollSecs)
+		go capture(srv.ctx, tld, srv.config.pollSecs)
 		time.Sleep(1 * time.Second) // respect TimeZoneDB.com limit 1 request/second
 	}
 
@@ -98,7 +99,7 @@ func main() {
 	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
 	defer func() { // on handled signals, cancel goroutines, wait and exit
 		signal.Stop(c)
-		cancel()
+		srv.cancel()
 		srv.wg.Wait()
 	}()
 
@@ -126,13 +127,13 @@ func catch() {
 // ********** ********** ********** ********** ********** **********
 
 func capture(ctx context.Context, tld *TLDef, pollInterval int) {
-	sn := fmt.Sprintf("capture.%q", tld.Name)
+	sn := fmt.Sprintf("capture.%s", tld.Name)
 
 	tld.SetCaptureTimes(time.Now()) // calculate all capture times for today
 	tld.UpdateNextCapture(time.Now())
 
-	log.Printf("%s, timezone %s, CaptureTimes (len %d): %v, FirstFlags %b, LastFlags %b\n",
-		sn, tld.WebcamTZ, len(tld.CaptureTimes), tld.CaptureTimes, tld.FirstFlags, tld.LastFlags)
+	log.Printf("%s, timezone %s, NextCapture %s, CaptureTimes (len %d): %v, FirstFlags %b, LastFlags %b\n",
+		sn, tld.WebcamTZ, tld.CaptureTimes[tld.NextCapture], len(tld.CaptureTimes), tld.CaptureTimes, tld.FirstFlags, tld.LastFlags)
 
 	for {
 		select {
@@ -241,8 +242,10 @@ type server struct {
 	validate *validator.Validate // use a single instance of Validate, it caches struct info
 	config   *Config
 	tmpl     *template.Template
-	localLoc *time.Location // timezone where this code is running
-	mtld     *masterTLDefs  // timelapse definitions, read from/written to timelapse.json
+	localLoc *time.Location  // timezone where this code is running
+	mtld     *masterTLDefs   // timelapse definitions, read from/written to timelapse.json
+	ctx      context.Context // context used to cancel go routines
+	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 }
 
@@ -395,7 +398,7 @@ func (s *server) handleNew() httprouter.Handle {
 			return
 		}
 
-		// TODO: #31 start capturing images from the new webcam
+		go capture(srv.ctx, tld, srv.config.pollSecs)
 
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 
@@ -742,7 +745,7 @@ func (tld *TLDef) SetLastCapture() error {
 // (today's captures have all been performed), updates CaptureTimes with
 // tomorrow's capture times
 func (tld *TLDef) UpdateNextCapture(baseTime time.Time) {
-	// sn := "UpdateNextCapture"
+	sn := "UpdateNextCapture"
 
 	// log.Printf("%s, %s NextCapture: baseTime %v, IsSorted %t, NextCapture %d, CaptureTimes (len %d): %v\n",
 	// 	sn, tld.Name, baseTime, sort.IsSorted(tld.CaptureTimes), tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
@@ -762,20 +765,20 @@ func (tld *TLDef) UpdateNextCapture(baseTime time.Time) {
 		tld.NextCapture++
 	}
 
-	// msg := ""
+	msg := ""
 	if tld.NextCapture >= len(tld.CaptureTimes) {
 		tomorrow := baseTime.AddDate(0, 0, 1)
 		tld.SetCaptureTimes(tomorrow) // setup tomorrow's capture times
 		tld.NextCapture = 0           // tomorrow's first time is next
-		// msg = "CaptureTimes set for tomorrow;"
+		msg = "CaptureTimes set for tomorrow;"
 	}
 
 	// log.Printf("%s, %s %s NextCapture: %d, CaptureTimes (len %d): %v\n",
 	// 	sn, tld.Name, msg, tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
-	// if msg != "" {
-	// 	log.Printf("%s, %s %s NextCapture: %d, CaptureTimes (len %d): %v\n",
-	// 		sn, tld.Name, msg, tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
-	// }
+	if msg != "" {
+		log.Printf("%s, %s %s NextCapture: %d, CaptureTimes (len %d): %v\n",
+			sn, tld.Name, msg, tld.NextCapture, len(tld.CaptureTimes), tld.CaptureTimes)
+	}
 }
 
 // NextCaptureTime returns the time of the next capture
