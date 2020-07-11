@@ -395,6 +395,8 @@ func (s *server) handleNew() httprouter.Handle {
 			return
 		}
 
+		// TODO: #31 start capturing images from the new webcam
+
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 
 		// log.Printf("%s.%s, duration %v\n", sn, mn, time.Now().Sub(startTime))
