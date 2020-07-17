@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -49,6 +50,8 @@ func TestMain(m *testing.M) {
 	// funcframework.RegisterHTTPFunction("/", capture.WebcamImage)
 
 	srv = newServer()
+	srv.ctx, srv.cancel = context.WithCancel(context.Background())
+
 	srv.initTemplates("./templates", ".html")
 	srv.router.ServeFiles("/static/*filepath", http.Dir("static"))
 	srv.router.POST("/new", srv.handleNew())
@@ -201,9 +204,9 @@ func Test_server_handleNew(t *testing.T) {
 		{name: "min valid",
 			params: map[string]string{
 				"name":         "test1",
-				"webcamUrl":    "https://www.konaweb.com/cam/guardian/22.jpg",
-				"latitude":     "19.6401882",
-				"longitude":    "-155.9957959",
+				"webcamUrl":    "https://www.nps.gov/webcams-lavo/kyvc_webcam1.jpg?1589316288166",
+				"latitude":     "40.437787",
+				"longitude":    "-121.5360307",
 				"firstSunrise": "",
 				"lastSunset":   "",
 				"additional":   "0",
@@ -215,9 +218,9 @@ func Test_server_handleNew(t *testing.T) {
 		{name: "missing name",
 			params: map[string]string{
 				// "name":         "test1",
-				"webcamUrl":    "https://www.konaweb.com/cam/guardian/22.jpg",
-				"latitude":     "19.6401882",
-				"longitude":    "-155.9957959",
+				"webcamUrl":    "https://www.nps.gov/webcams-lavo/kyvc_webcam1.jpg?1589316288166",
+				"latitude":     "40.437787",
+				"longitude":    "-121.5360307",
 				"firstSunrise": "",
 				"lastSunset":   "",
 				"additional":   "0",
@@ -229,9 +232,9 @@ func Test_server_handleNew(t *testing.T) {
 		{name: "missing webcamUrl",
 			params: map[string]string{
 				"name": "test1",
-				// "webcamUrl":    "https://www.konaweb.com/cam/guardian/22.jpg",
-				"latitude":     "19.6401882",
-				"longitude":    "-155.9957959",
+				// "webcamUrl":    "https://www.nps.gov/webcams-lavo/kyvc_webcam1.jpg?1589316288166",
+				"latitude":     "40.437787",
+				"longitude":    "-121.5360307",
 				"firstSunrise": "",
 				"lastSunset":   "",
 				"additional":   "0",
@@ -243,9 +246,9 @@ func Test_server_handleNew(t *testing.T) {
 		{name: "missing lat",
 			params: map[string]string{
 				"name":      "test1",
-				"webcamUrl": "https://www.konaweb.com/cam/guardian/22.jpg",
-				// "latitude":     "19.6401882",
-				"longitude":    "-155.9957959",
+				"webcamUrl": "https://www.nps.gov/webcams-lavo/kyvc_webcam1.jpg?1589316288166",
+				// "latitude":     "40.437787",
+				"longitude":    "-121.5360307",
 				"firstSunrise": "",
 				"lastSunset":   "",
 				"additional":   "0",
@@ -257,9 +260,9 @@ func Test_server_handleNew(t *testing.T) {
 		{name: "missing long",
 			params: map[string]string{
 				"name":      "test1",
-				"webcamUrl": "https://www.konaweb.com/cam/guardian/22.jpg",
-				"latitude":  "19.6401882",
-				// "longitude":    "-155.9957959",
+				"webcamUrl": "https://www.nps.gov/webcams-lavo/kyvc_webcam1.jpg?1589316288166",
+				"latitude":  "40.437787",
+				// "longitude":    "-121.5360307",
 				"firstSunrise": "",
 				"lastSunset":   "",
 				"additional":   "0",
@@ -271,9 +274,9 @@ func Test_server_handleNew(t *testing.T) {
 		{name: "missing additional",
 			params: map[string]string{
 				"name":         "test1",
-				"webcamUrl":    "https://www.konaweb.com/cam/guardian/22.jpg",
-				"latitude":     "19.6401882",
-				"longitude":    "-155.9957959",
+				"webcamUrl":    "https://www.nps.gov/webcams-lavo/kyvc_webcam1.jpg?1589316288166",
+				"latitude":     "40.437787",
+				"longitude":    "-121.5360307",
 				"firstSunrise": "",
 				"lastSunset":   "",
 				// "additional":   "0",
@@ -285,9 +288,9 @@ func Test_server_handleNew(t *testing.T) {
 		{name: "additional too small",
 			params: map[string]string{
 				"name":         "test1",
-				"webcamUrl":    "https://www.konaweb.com/cam/guardian/22.jpg",
-				"latitude":     "19.6401882",
-				"longitude":    "-155.9957959",
+				"webcamUrl":    "https://www.nps.gov/webcams-lavo/kyvc_webcam1.jpg?1589316288166",
+				"latitude":     "40.437787",
+				"longitude":    "-121.5360307",
 				"firstSunrise": "",
 				"lastSunset":   "",
 				"additional":   "-1",
@@ -299,9 +302,9 @@ func Test_server_handleNew(t *testing.T) {
 		{name: "additional too big",
 			params: map[string]string{
 				"name":         "test1",
-				"webcamUrl":    "https://www.konaweb.com/cam/guardian/22.jpg",
-				"latitude":     "19.6401882",
-				"longitude":    "-155.9957959",
+				"webcamUrl":    "https://www.nps.gov/webcams-lavo/kyvc_webcam1.jpg?1589316288166",
+				"latitude":     "40.437787",
+				"longitude":    "-121.5360307",
 				"firstSunrise": "",
 				"lastSunset":   "",
 				"additional":   "17",
@@ -313,9 +316,9 @@ func Test_server_handleNew(t *testing.T) {
 		{name: "missing folder",
 			params: map[string]string{
 				"name":         "test1",
-				"webcamUrl":    "https://www.konaweb.com/cam/guardian/22.jpg",
-				"latitude":     "19.6401882",
-				"longitude":    "-155.9957959",
+				"webcamUrl":    "https://www.nps.gov/webcams-lavo/kyvc_webcam1.jpg?1589316288166",
+				"latitude":     "40.437787",
+				"longitude":    "-121.5360307",
 				"firstSunrise": "",
 				"lastSunset":   "",
 				"additional":   "0",
@@ -327,9 +330,9 @@ func Test_server_handleNew(t *testing.T) {
 		{name: "sunrise30, sunset30",
 			params: map[string]string{
 				"name":           "test1",
-				"webcamUrl":      "https://www.konaweb.com/cam/guardian/22.jpg",
-				"latitude":       "19.6401882",
-				"longitude":      "-155.9957959",
+				"webcamUrl":      "https://www.nps.gov/webcams-lavo/kyvc_webcam1.jpg?1589316288166",
+				"latitude":       "40.437787",
+				"longitude":      "-121.5360307",
 				"firstSunrise30": "",
 				"lastSunset30":   "",
 				"additional":     "0",
@@ -341,9 +344,9 @@ func Test_server_handleNew(t *testing.T) {
 		{name: "sunrise60, sunset60",
 			params: map[string]string{
 				"name":           "test1",
-				"webcamUrl":      "https://www.konaweb.com/cam/guardian/22.jpg",
-				"latitude":       "19.6401882",
-				"longitude":      "-155.9957959",
+				"webcamUrl":      "https://www.nps.gov/webcams-lavo/kyvc_webcam1.jpg?1589316288166",
+				"latitude":       "40.437787",
+				"longitude":      "-121.5360307",
 				"firstSunrise60": "",
 				"lastSunset60":   "",
 				"additional":     "0",
