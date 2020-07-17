@@ -1,0 +1,7 @@
+.git/*
+.vscode/*
+.dockerignore
+.gitignore
+go.*
+LICENSE
+*.md
